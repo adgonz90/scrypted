@@ -631,30 +631,32 @@ function getAutoDiscoveryDevice(device: MixinDeviceBase<any>, mqttId: string) {
     }
 }
 
-function createBinarySensorConfig(mqttId: string, device: MixinDeviceBase<any>, prop: ScryptedInterfaceProperty, topic: string) {
+function createBinarySensorConfig(mqttId: string, device: MixinDeviceBase<any>, prop: ScryptedInterfaceProperty, topic: string, device_class?: string) {
     return {
         state_topic: `${topic}/${prop}`,
         payload_on: 'true',
         payload_off: 'false',
+        ...(device_class ? { device_class } : undefined),
         ...getAutoDiscoveryDevice(device, mqttId),
     }
 }
 
-function addBinarySensor(iface: ScryptedInterface, prop: ScryptedInterfaceProperty) {
+function addBinarySensor(iface: ScryptedInterface, prop: ScryptedInterfaceProperty, device_class?: string) {
     autoDiscoveryMap.set(iface, {
         component: 'binary_sensor',
         create(mqttId, device, topic) {
-            return createBinarySensorConfig(mqttId, device, prop, topic);
+            return createBinarySensorConfig(mqttId, device, prop, topic, device_class);
         }
     });
 }
 
-addBinarySensor(ScryptedInterface.MotionSensor, ScryptedInterfaceProperty.motionDetected);
+// device_class values per https://www.home-assistant.io/integrations/binary_sensor.mqtt/#device_class
+addBinarySensor(ScryptedInterface.MotionSensor, ScryptedInterfaceProperty.motionDetected, 'motion');
 addBinarySensor(ScryptedInterface.BinarySensor, ScryptedInterfaceProperty.binaryState);
-addBinarySensor(ScryptedInterface.OccupancySensor, ScryptedInterfaceProperty.occupied);
-addBinarySensor(ScryptedInterface.FloodSensor, ScryptedInterfaceProperty.flooded);
-addBinarySensor(ScryptedInterface.AudioSensor, ScryptedInterfaceProperty.audioDetected);
-addBinarySensor(ScryptedInterface.Online, ScryptedInterfaceProperty.online);
+addBinarySensor(ScryptedInterface.OccupancySensor, ScryptedInterfaceProperty.occupied, 'occupancy');
+addBinarySensor(ScryptedInterface.FloodSensor, ScryptedInterfaceProperty.flooded, 'moisture');
+addBinarySensor(ScryptedInterface.AudioSensor, ScryptedInterfaceProperty.audioDetected, 'sound');
+addBinarySensor(ScryptedInterface.Online, ScryptedInterfaceProperty.online, 'connectivity');
 
 autoDiscoveryMap.set(ScryptedInterface.Thermometer, {
     component: 'sensor',
@@ -662,7 +664,10 @@ autoDiscoveryMap.set(ScryptedInterface.Thermometer, {
         return {
             state_topic: `${topic}/${ScryptedInterfaceProperty.temperature}`,
             value_template: '{{ value_json }}',
-            unit_of_measurement: 'C',
+            // Thermometer.temperature is always reported in Celsius regardless of
+            // the device's user facing temperatureUnit, so the published unit must match.
+            unit_of_measurement: '°C',
+            device_class: 'temperature',
             ...getAutoDiscoveryDevice(device, mqttId),
         }
     }
@@ -675,6 +680,7 @@ autoDiscoveryMap.set(ScryptedInterface.HumiditySensor, {
             state_topic: `${topic}/${ScryptedInterfaceProperty.humidity}`,
             value_template: '{{ value_json }}',
             unit_of_measurement: '%',
+            device_class: 'humidity',
             ...getAutoDiscoveryDevice(device, mqttId),
         }
     }
@@ -719,6 +725,7 @@ export function publishAutoDiscovery(mqttId: string, client: Client, device: Mix
         client.publish(configTopic, JSON.stringify(config), {
             retain: true,
         });
+        device.console.log('mqtt discovered', found.component, iface, config.device_class ?? '(no device_class)', configTopic);
 
         if (subscribe) {
             const subscriptions = found.subscriptions || {};

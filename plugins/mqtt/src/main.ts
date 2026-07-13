@@ -244,6 +244,9 @@ class MqttPublisherMixin extends SettingsMixinDeviceBase<any> {
     }
 
     connectClient() {
+        // remove listeners from the old client first, otherwise its 'connect'/'message'
+        // closures can still fire (and publish) while it is mid-teardown, racing the new client.
+        this.client?.removeAllListeners();
         this.client?.end();
         this.client = undefined;
         const urlString = this.storage.getItem('url');
@@ -339,6 +342,9 @@ class MqttPublisherMixin extends SettingsMixinDeviceBase<any> {
     }
 
     async release() {
+        // remove listeners first, otherwise a 'connect' that arrives after end()
+        // is called can still fire and publish on a disconnecting client.
+        this.client?.removeAllListeners();
         this.client?.end();
         this.client = undefined;
         this.listener?.removeListener();
