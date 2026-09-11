@@ -1,6 +1,6 @@
-import sdk, { AirQuality, AirQualitySensor, CO2Sensor, DeviceProvider, Fan, FanMode, HumidityMode, HumiditySensor, HumiditySetting, HumiditySettingStatus, NOXSensor, OnOff, PM10Sensor, PM25Sensor, ScryptedDevice, ScryptedDeviceType, ScryptedInterface, VOCSensor } from "@scrypted/sdk";
+import sdk, { AirQuality, AirQualitySensor, AudioVolumeControl, Brightness, CO2Sensor, DeviceProvider, Fan, FanMode, HumidityMode, HumiditySensor, HumiditySetting, HumiditySettingStatus, NOXSensor, OnOff, PM10Sensor, PM25Sensor, ScryptedDevice, ScryptedDeviceType, ScryptedInterface, VOCSensor } from "@scrypted/sdk";
 import { bindCharacteristic } from "../common";
-import { Accessory, Characteristic, CharacteristicEventTypes, Service, uuid } from '../hap';
+import { Accessory, Characteristic, CharacteristicEventTypes, CharacteristicSetCallback, CharacteristicValue, Service, uuid } from '../hap';
 import type { HomeKitPlugin } from "../main";
 import { getService as getOnOffService } from "./onoff-base";
 import { HOMEKIT_MIXIN } from "../homekit-mixin";
@@ -332,19 +332,103 @@ export function addFan(device: ScryptedDevice & Fan, accessory: Accessory): Serv
  * Returns the services created as well as all of the child OnOff devices which have
  * been merged.
  */
-export function mergeOnOffDevicesByType(device: ScryptedDevice & DeviceProvider, accessory: Accessory, type: ScryptedDeviceType): { services: Service[], devices: (ScryptedDevice & OnOff)[] } {
+export function mergeOnOffDevicesByType(device: ScryptedDevice & DeviceProvider, accessory: Accessory, type: ScryptedDeviceType, exclude?: Set<string>): { services: Service[], devices: (ScryptedDevice & OnOff)[] } {
     if (!device.interfaces.includes(ScryptedInterface.DeviceProvider))
         return undefined;
 
     const children = getChildDevices(device);
     const mergedDevices = [];
     const services = children.map((child: ScryptedDevice & OnOff) => {
-        if (child.type !== type || !child.interfaces.includes(ScryptedInterface.OnOff) || !child.interfaces.includes(HOMEKIT_MIXIN))
+        if (child.type !== type || !child.interfaces.includes(ScryptedInterface.OnOff) || !child.interfaces.includes(HOMEKIT_MIXIN) || exclude?.has(child.id))
             return undefined;
 
         const onOffService = getOnOffService(child, accessory, Service.Switch)
         mergedDevices.push(child);
         return onOffService;
+    });
+
+    return {
+        services: services.filter(service => !!service),
+        devices: mergedDevices,
+    };
+}
+
+/*
+ * mergeLightDevicesByType is the Brightness-aware counterpart to mergeOnOffDevicesByType - it looks
+ * for the specified type of child devices under the given device provider and merges them as
+ * lightbulbs (on/off plus brightness) onto the accessory represented by the device provider.
+ */
+export function mergeLightDevicesByType(device: ScryptedDevice & DeviceProvider, accessory: Accessory, type: ScryptedDeviceType, exclude?: Set<string>): { services: Service[], devices: (ScryptedDevice & OnOff & Brightness)[] } {
+    if (!device.interfaces.includes(ScryptedInterface.DeviceProvider))
+        return undefined;
+
+    const children = getChildDevices(device);
+    const mergedDevices = [];
+    const services = children.map((child: ScryptedDevice & OnOff & Brightness) => {
+        if (child.type !== type || !child.interfaces.includes(ScryptedInterface.OnOff) || !child.interfaces.includes(HOMEKIT_MIXIN) || exclude?.has(child.id))
+            return undefined;
+
+        const service = getOnOffService(child, accessory, Service.Lightbulb);
+
+        if (child.interfaces.includes(ScryptedInterface.Brightness)) {
+            service.addCharacteristic(Characteristic.Brightness)
+                .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
+                    callback();
+                    child.setBrightness(value as number);
+                });
+
+            bindCharacteristic(child, ScryptedInterface.Brightness, service, Characteristic.Brightness, () => Math.min(Math.max(child.brightness || 0, 0), 100));
+        }
+
+        mergedDevices.push(child);
+        return service;
+    });
+
+    return {
+        services: services.filter(service => !!service),
+        devices: mergedDevices,
+    };
+}
+
+/*
+ * mergeVolumeDevicesByType merges the specified type of AudioVolumeControl child devices under the
+ * given device provider as independent Speaker services onto the accessory represented by the device
+ * provider. This is deliberately not linked to CameraController/recordingManagement, which already
+ * own the live-view audio session - this is a separate, persistent volume setting.
+ *
+ * Experimental: Apple's Home app UI support for a standalone Speaker service outside a
+ * Television/AirPlay context is unproven - success isn't guaranteed by correct wiring alone.
+ */
+export function mergeVolumeDevicesByType(device: ScryptedDevice & DeviceProvider, accessory: Accessory, type: ScryptedDeviceType, exclude?: Set<string>): { services: Service[], devices: (ScryptedDevice & AudioVolumeControl)[] } {
+    if (!device.interfaces.includes(ScryptedInterface.DeviceProvider))
+        return undefined;
+
+    const children = getChildDevices(device);
+    const mergedDevices = [];
+    const services = children.map((child: ScryptedDevice & AudioVolumeControl) => {
+        if (child.type !== type || !child.interfaces.includes(ScryptedInterface.AudioVolumeControl) || !child.interfaces.includes(HOMEKIT_MIXIN) || exclude?.has(child.id))
+            return undefined;
+
+        const service = accessory.addService(Service.Speaker, child.name, child.nativeId);
+        service.updateCharacteristic(Characteristic.ConfiguredName, child.name);
+
+        // Mute is a required characteristic on Service.Speaker, but there's no separate hardware
+        // "speaker mute" distinct from volume=0 here - keep it inert rather than invent one.
+        service.getCharacteristic(Characteristic.Mute)
+            .on(CharacteristicEventTypes.GET, callback => callback(null, false))
+            .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => callback());
+
+        service.addCharacteristic(Characteristic.Volume)
+            .on(CharacteristicEventTypes.SET, (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
+                callback();
+                child.setAudioVolumes({ speaker: value as number });
+            });
+
+        bindCharacteristic(child, ScryptedInterface.AudioVolumeControl, service, Characteristic.Volume,
+            () => Math.min(Math.max(child.audioVolumes?.speaker || 0, 0), 100));
+
+        mergedDevices.push(child);
+        return service;
     });
 
     return {

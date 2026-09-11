@@ -1,5 +1,5 @@
 import type { Resolution, RTCSignalingChannel } from '@scrypted/sdk';
-import sdk, { AudioSensor, Camera, DeviceProvider, Intercom, MotionSensor, OnOff, ScryptedDevice, ScryptedDeviceType, ScryptedInterface, VideoCamera, VideoCameraConfiguration } from '@scrypted/sdk';
+import sdk, { AudioSensor, Camera, DeviceProvider, HumiditySensor, Intercom, MotionSensor, OnOff, ScryptedDevice, ScryptedDeviceType, ScryptedInterface, Thermometer, VideoCamera, VideoCameraConfiguration } from '@scrypted/sdk';
 import { createCameraStorageSettings } from '../camera-mixin';
 import { DummyDevice, addSupportedType, bindCharacteristic } from '../common';
 import { AudioRecordingCodec, AudioRecordingCodecType, AudioRecordingSamplerate, AudioStreamingCodec, AudioStreamingCodecType, AudioStreamingSamplerate, CameraController, CameraRecordingConfiguration, CameraRecordingDelegate, CameraRecordingOptions, CameraStreamingOptions, Characteristic, CharacteristicEventTypes, H264Level, H264Profile, MediaContainerType, RecordingPacket, SRTPCryptoSuites, SecureVideoController, Service, VideoCodecType, WithUUID } from '../hap';
@@ -11,7 +11,7 @@ import { createSecureVideoController, secureVideoCmafEnabled } from './camera/ca
 import { createCameraStreamingDelegate } from './camera/camera-streaming';
 import { FORCE_OPUS } from './camera/camera-utils';
 import { createHomeKitWebRTCDelegate } from './camera/camera-webrtc';
-import { makeAccessory, mergeOnOffDevicesByType } from './common';
+import { getChildDevices, makeAccessory, mergeLightDevicesByType, mergeOnOffDevicesByType, mergeVolumeDevicesByType } from './common';
 
 const { deviceManager, systemManager } = sdk;
 
@@ -225,6 +225,33 @@ addSupportedType({
             // logSecureVideoRequests(accessory, controller, console);
         }
 
+        // Temperature/Humidity/Audio detection aren't part of HAP's CameraController - add them as
+        // ordinary linked services on the camera's own accessory, same pattern sensor.ts already
+        // uses for standalone Sensor-type accessories. Each service needs a distinct subtype so
+        // they don't collide. Named by sensor kind alone rather than upstream's "<camera> <kind>":
+        // these sit inside the camera's own accessory in the Home app, where the camera's name
+        // would only repeat.
+        if (device.interfaces.includes(ScryptedInterface.Thermometer)) {
+            const service = accessory.addService(Service.TemperatureSensor, 'Temperature', 'Thermometer');
+            setServiceName(service, 'Temperature');
+            bindCharacteristic(device, ScryptedInterface.Thermometer, service, Characteristic.CurrentTemperature,
+                () => (device as ScryptedDevice as ScryptedDevice & Thermometer).temperature || 0);
+        }
+
+        if (device.interfaces.includes(ScryptedInterface.HumiditySensor)) {
+            const service = accessory.addService(Service.HumiditySensor, 'Humidity', 'HumiditySensor');
+            setServiceName(service, 'Humidity');
+            bindCharacteristic(device, ScryptedInterface.HumiditySensor, service, Characteristic.CurrentRelativeHumidity,
+                () => (device as ScryptedDevice as ScryptedDevice & HumiditySensor).humidity || 0);
+        }
+
+        if (device.interfaces.includes(ScryptedInterface.AudioSensor)) {
+            const service = accessory.addService(Service.ContactSensor, 'Sound', 'AudioSensor');
+            setServiceName(service, 'Sound');
+            bindCharacteristic(device, ScryptedInterface.AudioSensor, service, Characteristic.ContactSensorState,
+                () => !!device.audioDetected);
+        }
+
         if (controller.motionService && isRecordingEnabled) {
             const motionDevice = device;
             if (!motionDevice) {
@@ -234,7 +261,7 @@ addSupportedType({
             const motionDetected = () => !!motionDevice.motionDetected;
 
             const { motionService } = controller;
-            setServiceName(motionService, `${device.name} Motion`);
+            setServiceName(motionService, 'Motion');
             bindCharacteristic(motionDevice,
                 ScryptedInterface.MotionSensor,
                 motionService,
@@ -254,7 +281,33 @@ addSupportedType({
                     });
             }
 
-            if (!device.interfaces.includes(ScryptedInterface.OnOff)) {
+            // Status Light: if this camera is a DeviceProvider with a dedicated Status Light child
+            // device (nanit-plugin-specific nativeId convention, same as Night Vision below), bind
+            // the native CameraOperatingModeIndicator characteristic directly to that child's real
+            // OnOff state instead of falling back to the generic branches below - otherwise the
+            // native toggle in the camera's Home app settings sheet is a disconnected dummy
+            // (persistBooleanCharacteristic, local storage only) while the real control lives
+            // elsewhere as a separate merged switch. Unifying them avoids two different "Status
+            // Light" controls on the same accessory where only one actually does anything.
+            const statusLightDevice = device.interfaces.includes(ScryptedInterface.DeviceProvider)
+                ? getChildDevices(device as ScryptedDevice as ScryptedDevice & DeviceProvider)
+                    .find(child => child.nativeId?.endsWith(':statuslight')) as (ScryptedDevice & OnOff) | undefined
+                : undefined;
+
+            if (statusLightDevice) {
+                const indicator = recordingManagement.operatingModeService.getCharacteristic(Characteristic.CameraOperatingModeIndicator);
+                bindCharacteristic(statusLightDevice, ScryptedInterface.OnOff, recordingManagement.operatingModeService, Characteristic.CameraOperatingModeIndicator,
+                    () => !!statusLightDevice.on);
+                indicator.on(CharacteristicEventTypes.SET, (value, callback) => {
+                    callback();
+                    if (value)
+                        statusLightDevice.turnOn();
+                    else
+                        statusLightDevice.turnOff();
+                });
+                homekitPlugin.mergedDevices.add(statusLightDevice.id);
+            }
+            else if (!device.interfaces.includes(ScryptedInterface.OnOff)) {
                 persistBooleanCharacteristic(recordingManagement.operatingModeService, Characteristic.CameraOperatingModeIndicator);
             }
             else {
@@ -278,19 +331,64 @@ addSupportedType({
                         device.turnOff();
                 });
             }
+
+            // Night Vision: HAP's CameraOperatingMode service (the same service object as
+            // recordingManagement.operatingModeService above) has an optional NightVision
+            // characteristic - this is the toggle Apple's Home app shows in a camera's own
+            // settings sheet for enabling/disabling automatic IR. There's no generic
+            // ScryptedInterface for "night vision enable", so this looks for a specific child
+            // device nativeId suffix - a deliberate nanit-plugin-specific coupling, not a
+            // generic mechanism.
+            if (device.interfaces.includes(ScryptedInterface.DeviceProvider)) {
+                const nightVisionChildren = getChildDevices(device as ScryptedDevice as ScryptedDevice & DeviceProvider);
+                const nightVisionAutoDevice = nightVisionChildren
+                    .find(child => child.nativeId?.endsWith(':nightvision-auto')) as (ScryptedDevice & OnOff) | undefined;
+                // The "On" (force-manual) child is used only for the OFF direction below - turning
+                // its OnOff off explicitly forces night vision off and clears both switches,
+                // unlike the Automatic switch's own turnOff() (which deliberately freezes the
+                // current IR state instead of forcing it off, to avoid killing the picture when
+                // just disabling auto-mode elsewhere). HomeKit's single boolean has no "freeze"
+                // concept, so OFF here needs to mean truly off.
+                const nightVisionOnDevice = nightVisionChildren
+                    .find(child => child.nativeId?.endsWith(':nightvision-on')) as (ScryptedDevice & OnOff) | undefined;
+                if (nightVisionAutoDevice) {
+                    const nightVisionCharacteristic = recordingManagement.operatingModeService.getCharacteristic(Characteristic.NightVision);
+                    bindCharacteristic(nightVisionAutoDevice, ScryptedInterface.OnOff, recordingManagement.operatingModeService, Characteristic.NightVision,
+                        () => !!nightVisionAutoDevice.on);
+                    nightVisionCharacteristic.on(CharacteristicEventTypes.SET, (value, callback) => {
+                        callback();
+                        if (value)
+                            nightVisionAutoDevice.turnOn();
+                        else
+                            (nightVisionOnDevice ?? nightVisionAutoDevice).turnOff();
+                    });
+                    homekitPlugin.mergedDevices.add(nightVisionAutoDevice.id);
+                }
+            }
         }
 
-        // if the camera is a device provider, merge in child devices and 
+        // if the camera is a device provider, merge in child devices and
         // ensure the devices are skipped by the rest of homekit by
         // reporting that they've been merged
         if (device.interfaces.includes(ScryptedInterface.DeviceProvider)) {
-            // merge in lights
-            mergeOnOffDevicesByType(device as ScryptedDevice as ScryptedDevice & DeviceProvider, accessory, ScryptedDeviceType.Light).devices.forEach(device => {
+            // merge in lights (as lightbulbs, preserving brightness where available)
+            mergeLightDevicesByType(device as ScryptedDevice as ScryptedDevice & DeviceProvider, accessory, ScryptedDeviceType.Light).devices.forEach(device => {
                 homekitPlugin.mergedDevices.add(device.id)
             });
 
             // merge in sirens
             mergeOnOffDevicesByType(device as ScryptedDevice as ScryptedDevice & DeviceProvider, accessory, ScryptedDeviceType.Siren).devices.forEach(device => {
+                homekitPlugin.mergedDevices.add(device.id)
+            });
+
+            // merge in remaining switches (Status Light and Night Vision Automatic are already
+            // handled above as native camera characteristics and excluded here via mergedDevices)
+            mergeOnOffDevicesByType(device as ScryptedDevice as ScryptedDevice & DeviceProvider, accessory, ScryptedDeviceType.Switch, homekitPlugin.mergedDevices).devices.forEach(device => {
+                homekitPlugin.mergedDevices.add(device.id)
+            });
+
+            // merge in speaker volume controls (experimental - see mergeVolumeDevicesByType)
+            mergeVolumeDevicesByType(device as ScryptedDevice as ScryptedDevice & DeviceProvider, accessory, ScryptedDeviceType.Speaker).devices.forEach(device => {
                 homekitPlugin.mergedDevices.add(device.id)
             });
         }
