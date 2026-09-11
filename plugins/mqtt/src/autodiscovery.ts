@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { Online, Brightness, ColorSettingHsv, ColorSettingTemperature, DeviceProvider, Lock, LockState, MixinDeviceBase, OnOff, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, ScryptedInterfaceProperty } from "@scrypted/sdk";
+import { AudioVolumeControl, Online, Brightness, ColorSettingHsv, ColorSettingTemperature, DeviceProvider, Lock, LockState, MixinDeviceBase, OnOff, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, ScryptedInterfaceProperty } from "@scrypted/sdk";
 import { Client, MqttClient, connect } from "mqtt";
 import { MqttDeviceBase } from "./api/mqtt-device-base";
 import nunjucks from 'nunjucks';
@@ -618,15 +618,30 @@ interface AutoDiscoveryConfig {
 
 const autoDiscoveryMap = new Map<string, AutoDiscoveryConfig>();
 
+function getMqttDeviceIds(mqttId: string, deviceId: string) {
+    return crypto.createHash('sha256').update(`scrypted-${mqttId}-${deviceId}`).digest().toString('hex').substring(0, 8);
+}
+
 function getAutoDiscoveryDevice(device: MixinDeviceBase<any>, mqttId: string) {
+    // Nest under the parent device's HA device entry (e.g. a camera's child switches under the
+    // camera) when this device has a real provider - same convention @scrypted/homekit's
+    // reorderDevicesByProvider relies on: a root-level device (the plugin itself) is its own
+    // provider (providerId === id), so skip nesting under that - it's never published as its
+    // own HA device, and a via_device pointing at it would just be a dangling reference.
+    const parent = device.providerId && device.providerId !== device.id
+        ? sdk.systemManager.getDeviceById(device.providerId)
+        : undefined;
+    const parentIsRoot = !parent || parent.providerId === parent.id;
+
     return {
         dev: {
             name: device.name,
             // what the hell is this
-            "ids": crypto.createHash('sha256').update(`scrypted-${mqttId}-${device.id}`).digest().toString('hex').substring(0, 8),
+            "ids": getMqttDeviceIds(mqttId, device.id),
             "sw": device.info?.version,
             "mdl": device.info?.model,
             "mf": device.info?.manufacturer,
+            ...(parent && !parentIsRoot ? { "via_device": getMqttDeviceIds(mqttId, parent.id) } : undefined),
         },
     }
 }
@@ -708,10 +723,71 @@ autoDiscoveryMap.set(ScryptedInterface.OnOff, {
     },
 });
 
+// A dimmable device (OnOff + Brightness) gets a single combined HA 'light' entity instead of a
+// separate switch - see the OnOff skip in publishAutoDiscovery() below, which avoids also
+// publishing a redundant plain switch entity for the same on/off state this entity already covers.
+autoDiscoveryMap.set(ScryptedInterface.Brightness, {
+    component: 'light',
+    create(mqttId, device, topic) {
+        return {
+            payload_on: 'true',
+            payload_off: 'false',
+            state_topic: `${topic}/${ScryptedInterfaceProperty.on}`,
+            command_topic: `${topic}/${ScryptedInterfaceProperty.on}/set`,
+            brightness_scale: 100,
+            brightness_state_topic: `${topic}/${ScryptedInterfaceProperty.brightness}`,
+            brightness_command_topic: `${topic}/${ScryptedInterfaceProperty.brightness}/set`,
+            ...getAutoDiscoveryDevice(device, mqttId),
+        }
+    },
+    subscriptions: {
+        'on/set': (device, event) => {
+            const d = sdk.systemManager.getDeviceById<OnOff>(device.id);
+            if (event.json)
+                d.turnOn();
+            else
+                d.turnOff();
+        },
+        'brightness/set': (device, event) => {
+            const d = sdk.systemManager.getDeviceById<Brightness>(device.id);
+            d.setBrightness(Number(event.text));
+        },
+    },
+});
+
+// AudioVolumeControl's audioVolumes is a map ({ microphone/intercom/speaker: number }), published
+// by the generic publishState() as a JSON blob - only the 'speaker' key is surfaced here as a plain
+// HA 'number' entity, since that's the only key any known consumer currently populates.
+autoDiscoveryMap.set(ScryptedInterface.AudioVolumeControl, {
+    component: 'number',
+    create(mqttId, device, topic) {
+        return {
+            state_topic: `${topic}/${ScryptedInterfaceProperty.audioVolumes}`,
+            value_template: '{{ value_json.speaker }}',
+            command_topic: `${topic}/${ScryptedInterfaceProperty.audioVolumes}/set`,
+            min: 0,
+            max: 100,
+            step: 1,
+            ...getAutoDiscoveryDevice(device, mqttId),
+        }
+    },
+    subscriptions: {
+        'audioVolumes/set': (device, event) => {
+            const d = sdk.systemManager.getDeviceById<AudioVolumeControl>(device.id);
+            d.setAudioVolumes({ speaker: Number(event.text) });
+        },
+    },
+});
+
 export function publishAutoDiscovery(mqttId: string, client: Client, device: MixinDeviceBase<any>, topic: string, subscribe: boolean, autoDiscoveryPrefix = 'homeassistant') {
     const subs = new Set<string>();
 
     for (const iface of device.interfaces) {
+        // A dimmable device's Brightness entry already publishes a combined HA 'light' entity
+        // covering on/off - skip the plain switch entity here so it isn't duplicated.
+        if (iface === ScryptedInterface.OnOff && device.interfaces.includes(ScryptedInterface.Brightness))
+            continue;
+
         const found = autoDiscoveryMap.get(iface);
         if (!found)
             continue;
