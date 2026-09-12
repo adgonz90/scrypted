@@ -230,8 +230,41 @@ export function createRtspParser(options?: StreamParserOptions): RtspStreamParse
             'tcp',
             ...(options?.vcodec || []),
             ...(options?.acodec || []),
-            // linux and windows seem to support 64000 but darwin is 32000?
-            '-pkt_size', '32000',
+            // Was 32000 (with a note that linux/windows seem to support 64000 but darwin is
+            // 32000). That is far too large for AAC audio and silently corrupts it.
+            //
+            // -pkt_size applies to every stream the rtsp muxer packetizes, audio included, and
+            // AAC-hbr packs as many access units into a packet as will fit. A camera sending
+            // 24kbps mono AAC has ~70 byte frames, so a 32000 byte budget packs hundreds of AUs
+            // into one RTP packet - and ffmpeg's own depacketizer then rejects a large fraction of
+            // them with "Invalid AU size", discarding every AU in the packet.
+            //
+            // Measured against a 44100Hz mono 24kbps AAC camera, same source, same codec copy,
+            // varying only this value: 32000 delivered 74.8% of the expected samples, 1400
+            // delivered 100.0%. The loss was byte-identical over TCP and UDP, so it is not a
+            // network or MTU effect - it is purely how many AUs get packed per packet. The
+            // resulting audio has a periodic dropout (measured: a 186ms gap every 720ms, exactly
+            // 8 of every 31 AAC frames) that every ffmpeg-based consumer inherits - HomeKit and
+            // WebRTC both chop, while VLC plays the same stream perfectly because its
+            // depacketizer is more permissive.
+            //
+            // Sweeping this value against that camera puts the cliff just above ~8400, not at an
+            // MTU boundary: 1400, 5600, 7000, 8192 and 8400 all delivered 100.0%, while 9800 fell
+            // to 89.0%, 11200 to 77.0% and 32000 to 75.2%.
+            //
+            // 1400 rather than something nearer the cliff, for two reasons. The real limit is the
+            // number of access units in a packet, not bytes, so where the cliff falls depends on
+            // the camera: halve the audio bitrate and the frames halve too, fitting twice as many
+            // AUs into the same byte budget and moving the cliff down. A value that is comfortable
+            // here could be marginal for a quieter-encoding camera. And 1400 keeps RTP payloads
+            // inside a conventional 1500 byte MTU, which matters for any consumer that does read
+            // this over real UDP rather than TCP interleaved.
+            //
+            // Video is unaffected in practice: H.264 is already fragmented into FU-A units by the
+            // muxer, so a smaller budget just means more, correctly sized packets - a keyframe
+            // costs a few hundred extra bytes of headers, against a multi-megabit stream. HomeKit
+            // and WebRTC repacketize video to their own MTU downstream regardless.
+            '-pkt_size', '1400',
             '-f', 'rtsp',
         ],
         findSyncFrame(streamChunks: StreamChunk[]) {
