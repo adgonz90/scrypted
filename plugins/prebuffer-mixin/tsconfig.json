@@ -6,7 +6,18 @@
         "moduleResolution": "Node16",
         "esModuleInterop": true,
         "sourceMap": true,
-        "strict": false
+        "strict": false,
+        // common/src/deferred.ts and promise-utils.ts are the only two files in @scrypted/common
+        // that are themselves symlinks into server/src. Resolving them from here means following
+        // two symlink hops (node_modules/@scrypted/common -> common/, then the file -> server/src/),
+        // which fails on Windows with TS2307. Point TypeScript straight at the real files; every
+        // other @scrypted/common import is a regular file and resolves normally.
+        // webpack needs the same redirect separately - see webpack.nodejs.config.js.
+        "baseUrl": ".",
+        "paths": {
+            "@scrypted/common/src/deferred": ["../../server/src/deferred"],
+            "@scrypted/common/src/promise-utils": ["../../server/src/promise-utils"]
+        }
     },
     "include": [
         "src/**/*"
