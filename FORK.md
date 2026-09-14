@@ -191,11 +191,23 @@ installed. It has its own `package.json` with real dependencies (including `@kou
 pointing at the `external/werift` submodule), and imports inside `common/src/*` resolve from
 there, not from the plugin. Run `npm install` in `common/`.
 
-**A locally-built plugin keeps upstream's version number.** Scrypted therefore shows no update
-available and nothing in the UI marks it as custom — but **reinstalling or updating that plugin
-from the registry silently reverts the patch.** Currently this applies to
-`@scrypted/prebuffer-mixin` **0.10.70**, which carries the audio fix: if chopped audio ever
-returns, check this first.
+**A locally-built plugin used to keep upstream's version number**, so Scrypted showed no update
+available, nothing in the UI marked it as custom, and reinstalling or updating it from the registry
+silently reverted the patch.
+
+Each patched plugin is now versioned ahead of upstream with a `-fork.N` tag, which fixes both
+halves - the UI shows what it is, and the registry offers nothing until upstream reaches that
+minor:
+
+| Plugin | Upstream | Here | Carries |
+|---|---|---|---|
+| `@scrypted/homekit` | 1.2.65 | **1.3.0-fork.1** | camera child device and sensor merging |
+| `@scrypted/prebuffer-mixin` | 0.10.70 | **0.11.0-fork.1** | the `common/` AAC `pkt_size` fix, bundled |
+| `@scrypted/mqtt` | 0.0.87 | **0.1.0-fork.1** | autodiscovery and reconnect fixes |
+
+Bump the tag (`-fork.2`, and so on) on each redeploy, so the running build is identifiable. When
+upstream reaches one of these minors an update *will* appear, which is correct: the patch has to
+be re-applied on top rather than quietly kept or quietly lost.
 
 ## Recurring working-tree noise
 
