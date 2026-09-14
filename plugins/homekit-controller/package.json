@@ -1,0 +1,49 @@
+{
+   "name": "@scrypted/homekit-controller",
+   "version": "0.1.0",
+   "description": "HomeKit Controller Plugin for Scrypted: pair HomeKit (HAP) accessories directly into Scrypted.",
+   "scripts": {
+      "scrypted-setup-project": "scrypted-setup-project",
+      "prescrypted-setup-project": "scrypted-package-json",
+      "build": "scrypted-webpack",
+      "prepublishOnly": "scrypted-changelog && NODE_ENV=production scrypted-webpack",
+      "prescrypted-vscode-launch": "scrypted-webpack",
+      "scrypted-vscode-launch": "scrypted-deploy-debug",
+      "scrypted-deploy-debug": "scrypted-deploy-debug",
+      "scrypted-debug": "scrypted-debug",
+      "scrypted-deploy": "scrypted-deploy",
+      "scrypted-changelog": "scrypted-changelog",
+      "scrypted-package-json": "scrypted-package-json",
+      "scrypted-readme": "scrypted-readme"
+   },
+   "keywords": [
+      "scrypted",
+      "plugin",
+      "apple",
+      "homekit",
+      "hap",
+      "controller"
+   ],
+   "scrypted": {
+      "name": "HomeKit Controller",
+      "type": "DeviceProvider",
+      "interfaces": [
+         "DeviceProvider",
+         "DeviceDiscovery",
+         "DeviceCreator",
+         "Settings"
+      ]
+   },
+   "dependencies": {
+      "@koush/werift-src": "file:../../external/werift",
+      "@scrypted/common": "file:../../common",
+      "@scrypted/sdk": "file:../../sdk",
+      "bonjour-hap": "^3.10.1",
+      "dns-packet": "^5.6.1",
+      "fast-srp-hap": "^2.0.4"
+   },
+   "devDependencies": {
+      "@types/node": "^22.18.0",
+      "typescript": "^5.9.3"
+   }
+}

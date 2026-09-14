@@ -1,0 +1,23 @@
+{
+    "compilerOptions": {
+        "module": "Node16",
+        "target": "ES2021",
+        "resolveJsonModule": true,
+        "moduleResolution": "Node16",
+        "esModuleInterop": true,
+        "sourceMap": true,
+        "strict": false,
+        // See webpack.nodejs.config.js: these two @scrypted/common files are symlinks into
+        // server/src and cannot be resolved through the double symlink hop on Windows. The type
+        // checker needs the redirect separately from webpack, because TS2307 comes from ts-loader,
+        // which a webpack alias does not affect.
+        "baseUrl": ".",
+        "paths": {
+            "@scrypted/common/src/deferred": ["../../server/src/deferred"],
+            "@scrypted/common/src/promise-utils": ["../../server/src/promise-utils"]
+        }
+    },
+    "include": [
+        "src/**/*"
+    ]
+}

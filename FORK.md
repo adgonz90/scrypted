@@ -1,10 +1,12 @@
 # Fork notes: `adgonz90/scrypted`
 
-What this fork changes relative to `koush/scrypted`, and why. Everything here exists to support a
+What this fork changes relative to `koush/scrypted`, and why. It began as patches supporting a
 Nanit baby camera running through Scrypted on a Raspberry Pi 4 (HAOS add-on, arm64), driven from
-HomeKit and Home Assistant.
+HomeKit and Home Assistant. It now also carries **original work** — see the HomeKit Controller
+plugin below — so this checkout is no longer disposable.
 
-**Currently 0 commits behind `koush/scrypted`**, with 7 commits on top.
+Count what is on top with `git fetch upstream && git log --oneline upstream/main..HEAD`, and how
+far behind with `git log --oneline HEAD..upstream/main`.
 
 Related docs: `mqtt-plugin-discovery-fixes.md` (this repo, MQTT setup and licensing notes);
 `FORK.md` in the `scryptedapp-nanit` checkout (the camera plugin itself);
@@ -21,7 +23,7 @@ Related docs: `mqtt-plugin-discovery-fixes.md` (this repo, MQTT setup and licens
 
 Compare with `git fetch upstream && git log --oneline upstream/main..HEAD`.
 
-## The 7 commits
+## The patch commits
 
 ### Audio — the one that matters most
 
@@ -141,6 +143,38 @@ npm installs bins as POSIX symlinks. On Windows npm generates `.cmd`/`.ps1` shim
 `Unknown command: cli.js`. Falls back to `npm_lifecycle_script`.
 
 **Without this, nothing in this repo builds on Windows.**
+
+## Original work: the HomeKit Controller plugin
+
+`plugins/homekit-controller/` is **not a patch**. It is a new plugin written from scratch in this
+fork: a HAP *controller*, the mirror image of the `homekit` plugin that ships with Scrypted. That
+one publishes Scrypted devices to Apple Home; this one pairs a HomeKit camera *into* Scrypted, so
+Rebroadcast, object detection, NVR, WebRTC and HomeKit Secure Video all apply to it. It has its own
+`README.md` and `CHANGELOG.md`, and eleven test suites under `test/`.
+
+**This is the reason the fork must not be treated as disposable.** Everything else here is a patch
+that could be re-derived from upstream; this cannot.
+
+### Why it lives in the tree rather than its own repository
+
+Three of its six dependencies are in-tree paths, and one of them has nowhere else to come from:
+
+| | |
+|---|---|
+| `@scrypted/sdk` | on npm, but used here as `file:../../sdk` |
+| `@scrypted/common` | on npm, but the in-tree copy carries the AAC `pkt_size` fix above |
+| `@koush/werift-src` | **not published at all** — it does the SRTP, SRTCP and RTCP work |
+
+The tests also borrow `hap-nodejs` from `plugins/homekit` and ffmpeg from `server/`.
+
+Beyond packaging, the plugin is unusually coupled to Scrypted's internals, and reading them next to
+it has repeatedly been what found a bug: Rebroadcast's `min(4000, idrInterval)` sync frame search,
+the HomeKit plugin's `FORCE_OPUS` and its recording codec list, `sdp-utils`' `mpeg4` to `aac`
+mapping, and the WebRTC plugin's codec preferences all shaped its behaviour.
+
+Moving it out is possible, and the prerequisite is replacing `@koush/werift-src` — most cleanly by
+implementing SRTP directly, which the plugin already has the crypto idioms for. It would also need
+renaming, since `@scrypted/homekit-controller` is Scrypted's npm scope.
 
 ## Building and deploying a patched plugin
 
