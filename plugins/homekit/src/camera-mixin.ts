@@ -3,6 +3,7 @@ import sdk, { Readme, ScryptedDeviceType, ScryptedInterface, Setting, SettingVal
 import { StorageSettings, StorageSettingsDevice } from "@scrypted/sdk/storage-settings";
 import { HomekitMixin } from "./homekit-mixin";
 import { getDebugMode } from "./types/camera/camera-debug-mode-storage";
+import { defaultMaxDurationSeconds, defaultMotionGraceSeconds } from "./types/camera/camera-recording-limits";
 
 const { systemManager, deviceManager, log } = sdk;
 
@@ -46,6 +47,20 @@ export function createCameraStorageSettings(device: StorageSettingsDevice) {
             description: 'Add an unconfigured doorbell button to HomeKit that can be used to create automations.',
             hide: true,
         },
+        hksvMotionGrace: {
+            title: 'Recording Grace Period',
+            subgroup: 'Recording',
+            description: 'How long a recording keeps running after motion clears, in seconds. HomeKit normally ends a recording itself; this only ends one it has left open. Raise it for a camera that reports motion as short pulses, where too low a value splits one event into several clips.',
+            type: 'number',
+            defaultValue: defaultMotionGraceSeconds,
+        },
+        hksvMaxDuration: {
+            title: 'Recording Maximum Duration',
+            subgroup: 'Recording',
+            description: 'The longest a single recording may run, in seconds, no matter how long motion lasts. This is the backstop for a motion sensor stuck on, which would otherwise record without end.',
+            type: 'number',
+            defaultValue: defaultMaxDurationSeconds,
+        },
     });
 }
 
@@ -61,6 +76,12 @@ export class CameraMixin extends HomekitMixin<Readme & VideoCamera> implements R
             if (oldValue !== newValue)
                 this.alertReload();
         };
+
+        // HomeKit Secure Video is only offered for a camera that reports motion, so without one
+        // there is no recording for these to bound.
+        const canRecord = this.interfaces.includes(ScryptedInterface.MotionSensor);
+        this.cameraStorageSettings.settings.hksvMotionGrace.hide = !canRecord;
+        this.cameraStorageSettings.settings.hksvMaxDuration.hide = !canRecord;
 
         if (!this.cameraStorageSettings.values.hasWarnedBridgedCamera && !this.storageSettings.values.standalone) {
             this.cameraStorageSettings.values.hasWarnedBridgedCamera = true;

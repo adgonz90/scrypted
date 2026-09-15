@@ -16,14 +16,13 @@ import { AudioRecordingCodecType, CameraRecordingConfiguration, RecordingPacket 
 import type { HomeKitPlugin } from "../../main";
 import { getDebugMode } from "./camera-debug-mode-storage";
 import { HksvVideoClip, VIDEO_CLIPS_NATIVE_ID, getCameraRecordingFiles } from './camera-recording-files';
+import { getRecordingLimits } from './camera-recording-limits';
 import { FORCE_OPUS, checkCompatibleCodec, transcodingDebugModeWarning } from './camera-utils';
 import { NAL_TYPE_DELIMITER, NAL_TYPE_FU_A, NAL_TYPE_IDR, NAL_TYPE_PPS, NAL_TYPE_SEI, NAL_TYPE_SPS, NAL_TYPE_STAP_A } from "./h264-packetizer";
 
 const { log, mediaManager, deviceManager } = sdk;
 
 export const iframeIntervalSeconds = 4;
-// have seen strange issues where homekit never terminates the video.
-const maxVideoDuration = 3 * 60 * 1000;
 
 const allowedNaluTypes = [
     NAL_TYPE_STAP_A,
@@ -298,11 +297,71 @@ export async function* handleFragmentsRequests(streamId: number, device: Scrypte
     let isLast = false;
     console.log(`motion recording started`);
     const { socket, cp, generator } = session;
-    const videoTimeout = setTimeout(() => {
-        console.error('homekit secure video max duration reached');
+
+    // HomeKit owns the length of a recording and normally closes the stream itself once motion
+    // clears. Everything below is the backstop for when it does not, and each path says which it
+    // was: a clip that ends on motion or on the ceiling is one HomeKit did not end on its own.
+    const { motionGraceMs, maxDurationMs } = getRecordingLimits(storage);
+    const graceSeconds = Math.round(motionGraceMs / 1000);
+    let endReason: string;
+    let motionResumes = 0;
+
+    const endRecording = (reason: string) => {
+        if (endReason)
+            return;
+        endReason = reason;
+        // isLast only reaches HomeKit on the next fragment. If the source has stopped producing
+        // them, nothing would carry it, so tear the pipes down regardless.
         isLast = true;
         setTimeout(cleanupPipes, 10000);
-    }, maxVideoDuration);
+    };
+
+    // Pending only while motion is clear, so it doubles as the "is the grace running" flag. A
+    // sensor that re-sends the same value - which listening to an interface, rather than to
+    // changes of it, does surface - must not restart the countdown, or a camera that repeats
+    // `false` would hold the recording open until the ceiling and quietly defeat all of this.
+    let graceTimeout: NodeJS.Timeout;
+    const startGrace = (why: string) => {
+        if (graceTimeout)
+            return;
+        console.log(`${why}; this recording will end in ${graceSeconds}s unless motion resumes or HomeKit closes it first`);
+        graceTimeout = setTimeout(() => {
+            graceTimeout = undefined;
+            console.warn(`motion has been clear for ${graceSeconds}s and HomeKit has not closed this recording; ending it`);
+            endRecording(`motion clear for ${graceSeconds}s`);
+        }, motionGraceMs);
+    };
+
+    const motionListener = device.listen(ScryptedInterface.MotionSensor, () => {
+        if (endReason)
+            return;
+
+        if (!device.motionDetected) {
+            startGrace('motion cleared');
+            return;
+        }
+
+        if (!graceTimeout)
+            return;
+
+        // A camera that pulses motion rather than holding it lands here repeatedly during one
+        // event. The count is reported at the end: a high one means this camera wants a grace
+        // period longer than the gap between its pulses.
+        clearTimeout(graceTimeout);
+        graceTimeout = undefined;
+        motionResumes++;
+        console.log('motion resumed before the grace period elapsed; this recording continues');
+    });
+
+    // the prebuffer means a recording can begin after the motion that triggered it has ended.
+    if (!device.motionDetected)
+        startGrace('motion was already clear when this recording started');
+
+    const videoTimeout = setTimeout(() => {
+        console.error(`homekit secure video max duration of ${Math.round(maxDurationMs / 1000)}s reached`
+            + `${device.motionDetected ? ' while motion was still detected' : ''}; ending the recording`);
+        endRecording('max duration');
+    }, maxDurationMs);
 
     let pending: Buffer[] = [];
     try {
@@ -384,8 +443,13 @@ export async function* handleFragmentsRequests(streamId: number, device: Scrypte
         console.log(`motion recording error ${e}`);
     }
     finally {
-        console.log(`motion recording finished`);
+        // Which of the three ended it. HomeKit closing the stream itself is the expected path, so
+        // anything else here is HomeKit not doing its job and is worth being able to count.
+        console.log(`motion recording finished (${endReason || 'closed by HomeKit'})`
+            + (motionResumes ? `, motion resumed ${motionResumes}x during it` : ''));
         clearTimeout(videoTimeout);
+        clearTimeout(graceTimeout);
+        motionListener.removeListener();
         cleanupPipes();
         recordingFile?.end();
         recordingFile?.destroy();
