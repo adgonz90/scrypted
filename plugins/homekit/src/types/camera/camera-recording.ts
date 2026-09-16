@@ -364,8 +364,9 @@ export async function* handleFragmentsRequests(streamId: number, device: Scrypte
     }, maxDurationMs);
 
     let pending: Buffer[] = [];
+    let i = 0;
+    let totalBytes = 0;
     try {
-        let i = 0;
         // if ffmpeg is being used to parse a prebuffered stream that is NOT mp4 (despite our request),
         // it seems that ffmpeg may output a bad first fragment. it may be missing various codec informations or
         // it may start on a non keyframe. HAP requires every fragment start on a keyframe.
@@ -427,7 +428,15 @@ export async function* handleFragmentsRequests(streamId: number, device: Scrypte
                 const fragment = Buffer.concat(pending);
                 saveFragment(i, fragment);
                 pending = [];
-                console.log(`motion fragment #${++i} sent. size:`, fragment.length);
+                ++i;
+                totalBytes += fragment.length;
+                // One line per fragment is one line every few seconds for as long as the recording
+                // runs, which on a camera that records back to back is most of its log. What the
+                // line is actually good for - how many fragments, how large - is summarised when
+                // the recording finishes, so this is only worth having while chasing a specific
+                // fragment.
+                if (debugMode.verbose)
+                    console.log(`motion fragment #${i} sent. size:`, fragment.length);
                 const wasLast = isLast;
                 const recordingPacket: RecordingPacket = {
                     data: fragment,
@@ -445,7 +454,8 @@ export async function* handleFragmentsRequests(streamId: number, device: Scrypte
     finally {
         // Which of the three ended it. HomeKit closing the stream itself is the expected path, so
         // anything else here is HomeKit not doing its job and is worth being able to count.
-        console.log(`motion recording finished (${endReason || 'closed by HomeKit'})`
+        console.log(`motion recording finished (${endReason || 'closed by HomeKit'}): `
+            + `${i} fragments, ${(totalBytes / 1048576).toFixed(1)}MB, ${Math.round((Date.now() - start) / 1000)}s`
             + (motionResumes ? `, motion resumed ${motionResumes}x during it` : ''));
         clearTimeout(videoTimeout);
         clearTimeout(graceTimeout);

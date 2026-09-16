@@ -12,6 +12,7 @@ export function getDebugMode(storage: Storage) {
         recording: debugMode.includes('Save Recordings'),
         video: debugMode.includes('Transcode Video'),
         audio: debugMode.includes('Transcode Audio'),
+        verbose: debugMode.includes('Verbose Logging'),
         value: debugMode,
     }
 }

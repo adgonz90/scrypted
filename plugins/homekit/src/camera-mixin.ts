@@ -161,11 +161,12 @@ ${this.storageSettings.values.qrCode}
             title: 'Debug Mode',
             subgroup: 'Debug',
             key: 'debugMode',
-            description: 'Force transcoding on this camera for streaming and recording. This setting can be used to diagnose errors with HomeKit functionality. Enable the Rebroadcast plugin for more robust transcoding options.',
+            description: 'Force transcoding on this camera for streaming and recording, save recordings to disk, or log every recording fragment. These can be used to diagnose errors with HomeKit functionality, and all of them are expensive to leave on. Enable the Rebroadcast plugin for more robust transcoding options.',
             choices: [
                 'Transcode Video',
                 'Transcode Audio',
                 'Save Recordings',
+                'Verbose Logging',
             ],
             multiple: true,
             value: debugMode.value,
