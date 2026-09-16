@@ -27,6 +27,12 @@ export interface DiscoveredAccessory {
 // HAP status flags, TXT record "sf". Bit 0 set means the accessory has not been paired.
 const STATUS_FLAG_UNPAIRED = 0x01;
 
+/** How long answers must stop arriving before a query is considered finished. */
+const SETTLE_QUIET_MS = 750;
+
+/** And the longest to wait regardless, so a chatty network cannot hold a refresh open. */
+const SETTLE_CAP_MS = 3000;
+
 /**
  * The fields a HAP TXT record carries, shared by both ways of obtaining one: overhearing a
  * multicast announcement, and asking a host directly.
@@ -141,6 +147,46 @@ export class HapDiscovery extends EventEmitter {
     /** Re-issues the mDNS query; discovery is passive otherwise. */
     refresh() {
         this.browser?.update();
+    }
+
+    /**
+     * Queries, then gives the answers time to arrive.
+     *
+     * `refresh` only puts a query on the wire. Reading the cache immediately after it therefore
+     * describes the network as it was *before* the query - which is what made pressing refresh
+     * show the result of the press before it, and an accessory that had just appeared look absent
+     * until it was pressed a second time.
+     *
+     * Waiting for quiet rather than for a fixed period matters in both directions: answers arrive
+     * within milliseconds on a quiet segment but straggle when a router is reflecting them across
+     * a VLAN, and a caller should not sit on the cap once the network has clearly finished.
+     */
+    async refreshAndSettle(quiet = SETTLE_QUIET_MS, cap = SETTLE_CAP_MS): Promise<void> {
+        if (!this.browser)
+            return;
+
+        this.refresh();
+
+        await new Promise<void>(resolve => {
+            let quietTimer: NodeJS.Timeout;
+
+            const finish = () => {
+                clearTimeout(quietTimer);
+                clearTimeout(capTimer);
+                this.removeListener('accessory', onAccessory);
+                resolve();
+            };
+
+            // each answer resets the clock, so a burst of them is waited out as one.
+            const onAccessory = () => {
+                clearTimeout(quietTimer);
+                quietTimer = setTimeout(finish, quiet);
+            };
+
+            const capTimer = setTimeout(finish, cap);
+            quietTimer = setTimeout(finish, quiet);
+            this.on('accessory', onAccessory);
+        });
     }
 
     get discovered(): DiscoveredAccessory[] {

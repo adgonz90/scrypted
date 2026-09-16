@@ -49,8 +49,10 @@ export class HomeKitControllerProvider extends ScryptedDeviceBase implements Dev
     // ---------------------------------------------------------------------------------------
 
     async discoverDevices(scan?: boolean): Promise<DiscoveredDevice[]> {
+        // An explicit refresh is someone asking what is out there now, so answer the query they
+        // just caused rather than handing back what was already known.
         if (scan)
-            this.discovery.refresh();
+            await this.discovery.refreshAndSettle();
 
         const paired = new Set(
             deviceManager.getNativeIds()

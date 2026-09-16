@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.2
+
+**Give a refresh time to be answered.** Refreshing the accessory list sent an mDNS query and then
+read the cache immediately, without waiting - so the list described the network as it was *before*
+the query, and an accessory that had just appeared stayed missing until refresh was pressed a
+second time. Pressing it always showed the result of the previous press.
+
+`resolve` already waited, but it waits for one known accessory id and rejects if that id does not
+appear; discovery is open ended, with no id to match and no count to expect, so it needed its own
+answer: query, then wait until answers stop arriving, capped so a chatty network cannot hold the
+refresh open. Quiet for 750ms ends the wait, and 3s ends it regardless.
+
+
 ## 0.1.1
 
 **Follow an accessory that moves.** A HAP accessory picks an arbitrary port each time its server
