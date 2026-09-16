@@ -71,18 +71,33 @@ export class HapDiscovery extends EventEmitter {
         this.bonjour = new Bonjour();
         this.browser = this.bonjour.find({ type: 'hap', protocol: 'tcp' });
 
-        this.browser.on('up', service => {
+        // 'up' is only emitted for a service the browser has not seen before. An accessory that
+        // re-announces - which is what it does after a reboot, a factory reset, or a move to a new
+        // address - takes the 'update' path instead, and that is exactly when its port has changed:
+        // a HAP accessory picks an arbitrary one each time its server starts. Listening to 'up'
+        // alone means the browser tells us the accessory moved and we keep the address it moved
+        // from, which then refuses every connection. Both events carry the same service, and
+        // recording one is idempotent, so both take the same path.
+        const onService = (service: BonjourService) => {
             try {
                 const accessory = parseService(service);
                 if (!accessory.id)
                     return;
+                const previous = this.accessories.get(accessory.id);
+                if (previous && (previous.host !== accessory.host || previous.port !== accessory.port)) {
+                    this.console?.log(`${accessory.name || accessory.id} moved from `
+                        + `${previous.host}:${previous.port} to ${accessory.host}:${accessory.port}`);
+                }
                 this.accessories.set(accessory.id, accessory);
                 this.emit('accessory', accessory);
             }
             catch (e) {
                 this.console?.warn('failed to parse a discovered HAP accessory', e);
             }
-        });
+        };
+
+        this.browser.on('up', onService);
+        this.browser.on('update', onService);
 
         this.browser.on('down', service => {
             const id = (service.txt?.['id'] || '').toUpperCase();

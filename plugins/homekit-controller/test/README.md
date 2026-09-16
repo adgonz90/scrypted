@@ -18,6 +18,7 @@ npx tsc -p . --outDir tsout --sourceMap false
 node test/stream-config-test.js     # TLV8 and capability parsing, against captured fixtures
 node test/stream-telemetry-test.js  # keyframe pacing and stream measurement, against simulated cameras
 node test/unicast-mdns-test.js      # resolving an accessory by address, against a hand written responder
+node test/discovery-update-test.js  # following an accessory that reboots onto a different port
 node test/pairing-loopback.js       # pair setup, pair verify, encrypted session, events, snapshot
 node test/controls-test.js          # child device discovery and control writes, incl. timed writes
 ```
@@ -65,6 +66,14 @@ multicast group regardless of who asked, so it never sends the unicast reply thi
 the responders embedded in real accessories do. Both shapes of answer are covered — everything
 volunteered at once, and a terse responder that has to be asked a second time for the records it
 withheld.
+
+**`discovery-update-test.js`** covers an accessory that moves. A HAP accessory picks an arbitrary
+port each time its server starts, so a reboot or a HomeKit reset generally lands it on a different
+one, and `bonjour-hap` reports that as an `update` rather than an `up` - `up` fires only for a
+service the browser has never seen. Listening to `up` alone therefore keeps the address the
+accessory moved away from, and every later connection to it is refused, with the mDNS query itself
+working perfectly the whole time. The browser is driven directly rather than over a real network,
+since what is under test is which events are wired up.
 
 **`pairing-loopback.js`** runs SRP pair setup, pair verify, and then exercises the encrypted
 session: the accessory database, plain and TLV8 characteristic reads, an event subscription with a

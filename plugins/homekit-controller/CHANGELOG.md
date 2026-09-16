@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.1
+
+**Follow an accessory that moves.** A HAP accessory picks an arbitrary port each time its server
+starts, so a reboot, a factory reset, or a HomeKit reset generally lands it on a different one.
+`bonjour-hap` reports that as an `update` rather than an `up` - `up` fires only for a service the
+browser has never seen before - and discovery listened to `up` alone. So the browser was reporting
+the move, by name, and it was being dropped: the old address stayed cached and every connection to
+it was refused with `ECONNREFUSED`, while mDNS itself worked perfectly throughout.
+
+Refresh could not fix it either, since re-querying only produced another `update`. Only reloading
+the plugin cleared the stale entry, which made it look like a cache expiry problem rather than a
+missing event handler.
+
+Both events now take the same path, and a move is logged with the addresses it moved between.
+
 ## 0.1.0
 
 First release. Pairs HomeKit (HAP) cameras into Scrypted, the mirror image of the **HomeKit**
