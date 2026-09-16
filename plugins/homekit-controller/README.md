@@ -63,6 +63,37 @@ A camera added this way has its address pinned, since discovery evidently cannot
 the **Address Override** in its settings, and clearing it returns the camera to being located by
 mDNS. The **Last Known Address** is shown alongside.
 
+### Cameras that only announce when asked to
+
+Some accessories do not announce themselves at all until their own app is showing a pairing screen.
+Ecobee's cameras are like this: nothing of theirs appears on the network, by multicast or unicast,
+until **Add to HomeKit** is open in the Ecobee app, at which point the camera advertises for as long
+as that screen is up and goes quiet again afterwards. It is a departure from HomeKit's own rules,
+where an unpaired accessory advertises continuously so that it can be found, and presumably a
+deliberate one: an accessory discoverable only while you are looking at it is harder to pair without
+physical access.
+
+This is worth knowing because the symptom looks like a network fault rather than a camera keeping
+quiet. The camera answers on its HomeKit port perfectly well throughout — it simply never says where
+that port is. So discovery shows nothing, and a manual attempt using a port noted earlier fails with
+a bare `ECONNREFUSED`, which reads as a firewall or a routing problem and is neither.
+
+The port is usually wrong by then, too. A HomeKit accessory picks an arbitrary port every time its
+server starts, and opening the pairing screen restarts it, so each visit to that screen is liable to
+move the camera somewhere new. A port learned on a previous attempt is not one to keep.
+
+**So pair a camera like this in the following order:**
+
+1. Open the vendor app and go to its **Add to HomeKit** screen. Leave it open.
+2. In Scrypted, open **Add Device** for this plugin and press refresh. The camera should appear.
+3. Pick it, enter the setup code, and add it — all while that screen is still up.
+
+Refresh sends a fresh mDNS query and waits for the answers rather than returning what was already
+known, so one press is enough: it returns once announcements stop arriving, and at most three
+seconds after the query either way. If the camera still does not appear it is not advertising — check
+that the app really is on the pairing screen, and see the note above about the Home app, since an
+accessory already paired elsewhere will not offer itself to anything else.
+
 ## Unpairing
 
 Either delete the camera from Scrypted, or use the **Unpair** button in its group on the plugin's

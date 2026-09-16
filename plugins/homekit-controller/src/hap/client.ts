@@ -135,6 +135,17 @@ export class HapClient extends EventEmitter {
             throw e;
         }
 
+        // The same hazard as the catch above, on the path where nothing went wrong. Until the
+        // assignment below this socket is known only to this invocation, so a stop() during either
+        // await destroys whatever `connection` held at the time - not this one - and then this
+        // resumes and hands a live socket to a client that has been torn down. Nothing would ever
+        // close it, and it would hold one of the accessory's controller slots until the accessory
+        // itself gave up on it.
+        if (this.stopped) {
+            connection.destroy();
+            throw new Error('HAP client was stopped while connecting');
+        }
+
         this.connection = connection;
 
         // a fresh connection starts with no event subscriptions, so restore them.

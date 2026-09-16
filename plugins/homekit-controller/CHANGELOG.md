@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.3
+
+**Stop leaking connections when a camera is torn down mid start-up.** Two instances of the same
+mistake: a resource created before an await, and a teardown that can run during that await
+without being able to see it.
+
+In the HAP client, a socket is known only to the invocation that made it until pair verify has
+finished and it is assigned. A `stop()` in that window destroyed whatever the client held at the
+time - not this socket - and then the connect resumed and handed a live socket to a client that
+had been stopped. Nothing ever closed it, and it held one of the accessory's small number of
+controller slots until the accessory gave up on it. The failure path was already guarded, with a
+comment explaining exactly this; the success path was not.
+
+In the camera, `release()` clears the client, so a start-up in flight would resume and use
+nothing - which is how this surfaced, as `Cannot read properties of undefined (reading
+'getAccessories')` on a camera that had just been added. Start-up now abandons itself if
+something has replaced it, and says so as an ordinary log line rather than an error, because
+`reinitialize` does exactly that on purpose every time a camera announces a new address.
+
+Seen as three live TCP sessions to a camera that should have had one.
+
+
 ## 0.1.2
 
 **Give a refresh time to be answered.** Refreshing the accessory list sent an mDNS query and then

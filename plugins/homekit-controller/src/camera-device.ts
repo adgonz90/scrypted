@@ -135,6 +135,14 @@ const SENSOR_POLL_MS = 10000;
  */
 const SESSION_SETTLE_MS = 750;
 
+/**
+ * A start-up that was abandoned because something replaced the camera underneath it.
+ *
+ * Distinct from a failure: reinitialize does exactly this on purpose whenever the camera announces
+ * a new address, so reporting it as an error would make a working reconnection look broken.
+ */
+class SupersededError extends Error { }
+
 export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Camera, MotionSensor, BinarySensor, DeviceProvider,
     Battery, Charger, Online, Settings, Intercom, Thermometer, HumiditySensor, AirQualitySensor, AmbientLightSensor, OccupancySensor {
     client: HapClient;
@@ -198,14 +206,22 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
         });
 
         this.initialize()
-            .catch(e => this.console.error('failed to initialize HomeKit camera', e));
+            .catch(e => this.reportStartupError('failed to initialize HomeKit camera', e));
     }
 
     /** Tears the connection down and builds a new one, re-resolving the address. */
     private reinitialize() {
         this.release()
             .then(() => this.initialize())
-            .catch(e => this.console.error('failed to reconnect', e));
+            .catch(e => this.reportStartupError('failed to reconnect', e));
+    }
+
+    /** A start-up abandoned for a newer one is routine; anything else is a fault. */
+    private reportStartupError(what: string, e: Error) {
+        if (e instanceof SupersededError)
+            this.console.log(e.message);
+        else
+            this.console.error(what, e);
     }
 
     get pairingData() {
@@ -291,24 +307,39 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
         this.currentAddress = { host: address.host, port: address.port };
 
         this.client?.stop();
-        this.client = new HapClient(address.host, address.port, pairingData, this.console);
+        const client = new HapClient(address.host, address.port, pairingData, this.console);
+        this.client = client;
 
-        this.client.on('connected', () => {
+        client.on('connected', () => {
             this.online = true;
             // remember where it answered, so a later start does not depend on mDNS being heard.
             this.storage.setItem('lastKnownHost', address.host);
             this.storage.setItem('lastKnownPort', String(address.port));
             this.console.log(`connected to ${address.host}:${address.port} (via ${address.source})`);
         });
-        this.client.on('disconnected', (e: Error) => {
+        client.on('disconnected', (e: Error) => {
             this.online = false;
             this.console.warn('disconnected from accessory', e?.message);
         });
-        this.client.on('characteristic', event => this.onCharacteristicEvent(event));
+        client.on('characteristic', event => this.onCharacteristicEvent(event));
 
-        await this.client.ensureConnected();
+        /**
+         * Everything below runs across awaits, and release() can happen during any of them - a
+         * device removed, the plugin unloading, or simply being re-added. It clears `this.client`,
+         * so carrying on would either dereference nothing (which is how this surfaced: a
+         * `getAccessories` of undefined) or, worse, finish setting up a camera that has been torn
+         * down. Whoever replaced this client has already stopped it, so there is nothing to undo
+         * here beyond stopping.
+         */
+        const superseded = () => this.client !== client;
 
-        const accessories = await this.client.getAccessories();
+        await client.ensureConnected();
+        if (superseded())
+            throw new SupersededError('this camera was released while it was connecting');
+
+        const accessories = await client.getAccessories();
+        if (superseded())
+            throw new SupersededError('this camera was released while it was starting up');
         // a standalone camera publishes exactly one accessory.
         this.accessory = accessories.accessories[0];
         if (!this.accessory)
@@ -318,6 +349,8 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
 
         await this.loadStreamCapabilities();
         await this.publishDeviceInfo();
+        if (superseded())
+            throw new SupersededError('this camera was released while it was being described');
 
         // Re-announce the device from the live service graph. Interfaces are otherwise frozen at
         // whatever the plugin understood on the day it was paired, so this is what lets a camera
@@ -330,6 +363,9 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
             describeDevice(this.accessory, category, this.name || 'Camera', this.nativeId));
 
         await this.loadControls();
+        if (superseded())
+            throw new SupersededError('this camera was released while its controls were being published');
+
         await this.subscribeSensors();
     }
 
