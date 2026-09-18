@@ -135,6 +135,9 @@ const SENSOR_POLL_MS = 10000;
  */
 const SESSION_SETTLE_MS = 750;
 
+/** How long motion may stay on before it stops being plausible as something alive. */
+const STUCK_MOTION_MINUTES = 30;
+
 /**
  * A start-up that was abandoned because something replaced the camera underneath it.
  *
@@ -159,6 +162,8 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
     private polledValues = new Map<number, any>();
     private sensorPollTimer: NodeJS.Timeout;
     private motionClearTimer: NodeJS.Timeout;
+    private stuckMotionTimer: NodeJS.Timeout;
+    private motionOnSince: number;
     private polling = false;
     private controlDescriptors = new Map<string, ControlDescriptor>();
     private controls = new Map<string, HomeKitCameraControl>();
@@ -783,9 +788,21 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
         this.motionClearTimer = undefined;
 
         if (detected) {
+            if (!this.motionDetected)
+                this.motionOnSince = Date.now();
             this.motionDetected = true;
+            this.armStuckMotionWarning();
             return;
         }
+
+        if (this.motionDetected && this.motionOnSince) {
+            const minutes = Math.round((Date.now() - this.motionOnSince) / 60000);
+            if (minutes >= STUCK_MOTION_MINUTES)
+                this.console.log(`motion finally cleared after ${minutes} minutes`);
+        }
+        this.motionOnSince = undefined;
+        clearTimeout(this.stuckMotionTimer);
+        this.stuckMotionTimer = undefined;
 
         const seconds = this.motionTimeout;
         if (!seconds) {
@@ -803,6 +820,28 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
             this.motionClearTimer = undefined;
             this.motionDetected = false;
         }, seconds * 1000);
+    }
+
+    /**
+     * Says so when motion has been on implausibly long.
+     *
+     * Motion that never once drops is not a busy room - a room with people in it produces gaps.
+     * It is something that moves without stopping and is not alive: a ceiling fan clipping the
+     * frame, a blind in the draught, sunlight crossing a wall. HomeKit will keep asking for
+     * recordings of it and keep discarding them, because its own analysis finds no subject, and
+     * nothing anywhere would otherwise say why. Re-armed so a long latch keeps reporting rather
+     * than being announced once and forgotten.
+     */
+    private armStuckMotionWarning() {
+        clearTimeout(this.stuckMotionTimer);
+        this.stuckMotionTimer = setTimeout(() => {
+            const minutes = Math.round((Date.now() - (this.motionOnSince ?? Date.now())) / 60000);
+            this.console.warn(`this camera has reported motion continuously for ${minutes} minutes without a single break. `
+                + 'Something in frame is moving without stopping - a ceiling fan, a blind, sunlight across a room. '
+                + 'HomeKit records it and then discards each clip, having found nothing in it worth keeping. '
+                + 'An activity zone that excludes whatever is moving is the fix; the camera itself is working.');
+            this.armStuckMotionWarning();
+        }, STUCK_MOTION_MINUTES * 60000);
     }
 
     /** Seconds to hold motion on after the accessory clears it; 0 disables the hold. */
@@ -1743,6 +1782,9 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
         this.stopSensorPoll();
         clearTimeout(this.motionClearTimer);
         this.motionClearTimer = undefined;
+        clearTimeout(this.stuckMotionTimer);
+        this.stuckMotionTimer = undefined;
+        this.motionOnSince = undefined;
         await this.stopIntercom();
         for (const session of this.sessions.keys())
             await session.stop().catch(() => { });

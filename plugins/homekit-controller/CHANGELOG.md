@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.5
+
+**Say so when motion has been on implausibly long.** Motion that never once drops is not a busy
+room - a room with people in it produces gaps. It is something that moves without stopping and is
+not alive, and HomeKit will record it and discard every clip, because its own analysis finds no
+subject in any of them.
+
+Found here as a ceiling fan clipping the corner of a living room frame: motion continuously true
+for 191 minutes of recording across 20 clips, not one break, in a house that was empty. HomeKit
+kept exactly one clip from that window - the dog - and binned 2.7GB of fan.
+
+Nothing said any of this. The camera was working, the plugin was working, HomeKit was working, and
+the only trace was clips quietly not appearing. A warning after thirty unbroken minutes, repeated
+while it lasts, and a note of the total when it finally clears.
+
+
 ## 0.1.4
 
 **Motion Timeout**, a new per-camera setting: seconds to keep reporting motion after the camera

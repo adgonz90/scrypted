@@ -24,6 +24,20 @@ const { log, mediaManager, deviceManager } = sdk;
 
 export const iframeIntervalSeconds = 4;
 
+/**
+ * Consecutive recordings ended by the ceiling, per camera.
+ *
+ * HomeKit ends a recording when it has what it wants, so a run of them ending any other way means
+ * it has stopped managing this camera's recordings - and in the case that prompted this, stopped
+ * saving them too, while still asking for more. Everything downstream of that is wasted: the
+ * prebuffer, the mux, the upload. Nothing said so, because each recording looks fine on its own
+ * and only the run is evidence.
+ */
+const consecutiveUnclosed = new Map<string, number>();
+
+/** How many in a row before saying something. Two is within the range of ordinary long events. */
+const UNCLOSED_WARN_AT = 3;
+
 const allowedNaluTypes = [
     NAL_TYPE_STAP_A,
     NAL_TYPE_SPS,
@@ -462,6 +476,22 @@ export async function* handleFragmentsRequests(streamId: number, device: Scrypte
         console.log(`motion recording finished (${endReason || 'closed by HomeKit'}): `
             + `${i} fragments, ${(totalBytes / 1048576).toFixed(1)}MB, ${Math.round((Date.now() - start) / 1000)}s`
             + (motionResumes ? `, motion resumed ${motionResumes}x during it` : ''));
+
+        if (!endReason) {
+            consecutiveUnclosed.delete(device.id);
+        }
+        else {
+            const run = (consecutiveUnclosed.get(device.id) || 0) + 1;
+            consecutiveUnclosed.set(device.id, run);
+            if (run >= UNCLOSED_WARN_AT) {
+                console.warn(`HomeKit has not closed the last ${run} recordings from this camera, which usually means it is `
+                    + 'no longer saving them - it analyses each clip and discards one with nothing in it worth keeping. '
+                    + 'Everything spent producing them is wasted. Check what is triggering this camera\'s motion sensor: '
+                    + 'something that moves continuously and is not a person, animal or vehicle - a ceiling fan, a blind, '
+                    + 'sunlight across a room - will hold motion on and be rejected every time.');
+            }
+        }
+
         clearTimeout(videoTimeout);
         clearTimeout(graceTimeout);
         motionListener.removeListener();

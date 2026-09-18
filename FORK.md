@@ -201,7 +201,7 @@ minor:
 
 | Plugin | Upstream | Here | Carries |
 |---|---|---|---|
-| `@scrypted/homekit` | 1.2.65 | **1.3.0-fork.4** | camera child device and sensor merging, motion-bounded HKSV recordings, quieter recording log |
+| `@scrypted/homekit` | 1.2.65 | **1.3.0-fork.5** | camera child device and sensor merging, motion-bounded HKSV recordings, quieter recording log |
 | `@scrypted/prebuffer-mixin` | 0.10.70 | **0.11.0-fork.1** | the `common/` AAC `pkt_size` fix, bundled |
 | `@scrypted/mqtt` | 0.0.87 | **0.1.0-fork.1** | autodiscovery and reconnect fixes |
 
