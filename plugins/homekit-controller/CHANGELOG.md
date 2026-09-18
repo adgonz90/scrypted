@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.4
+
+**Motion Timeout**, a new per-camera setting: seconds to keep reporting motion after the camera
+says it has stopped. Off by default.
+
+Some cameras report motion as a level that stays up for as long as something is moving. Others
+report a series of short pulses - a camera that detects in the vendor's cloud tends to, because
+what reaches it is a sequence of verdicts rather than a continuous observation. Passed through
+unchanged, every gap between pulses starts a new event everywhere downstream: another HomeKit
+notification, another recording, another snapshot, several times over for what a person watching
+would call one thing happening.
+
+Measured on an Arlo Baby here: 67 event snapshots requested by HomeKit against 35 recordings, and
+68 clearings of motion across those 35 - roughly two notifications per actual event. The two
+Ecobee cameras on the same install requested none.
+
+Holding the signal up through the gaps collapses those back into one. It stays off by default
+because it is a lie about what the accessory said, worth telling only for a camera whose pulses
+are demonstrably one event - and the length of gap to bridge is a property of that camera rather
+than something to guess at.
+
+
 ## 0.1.3
 
 **Stop leaking connections when a camera is torn down mid start-up.** Two instances of the same

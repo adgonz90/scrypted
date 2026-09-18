@@ -158,6 +158,7 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
     private pushedCharacteristics = new Set<number>();
     private polledValues = new Map<number, any>();
     private sensorPollTimer: NodeJS.Timeout;
+    private motionClearTimer: NodeJS.Timeout;
     private polling = false;
     private controlDescriptors = new Map<string, ControlDescriptor>();
     private controls = new Map<string, HomeKitCameraControl>();
@@ -519,7 +520,7 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
         const motion = findService(this.accessory, Service.MotionSensor);
         if (motion) {
             // HAP booleans arrive as 0 and 1 rather than false and true.
-            bind(motion, Characteristic.MotionDetected, value => this.motionDetected = !!value);
+            bind(motion, Characteristic.MotionDetected, value => this.applyMotion(!!value));
         }
 
         const doorbell = findService(this.accessory, Service.Doorbell)
@@ -760,6 +761,54 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
         catch (e) {
             this.console.warn('error handling characteristic value', e);
         }
+    }
+
+    /**
+     * Motion, with the option of holding it on briefly after the accessory drops it.
+     *
+     * Some cameras report motion as a level that stays up for as long as something is moving, and
+     * some report it as a series of pulses - a camera that detects in the vendor's cloud tends to
+     * be the latter, because what reaches it is a sequence of verdicts rather than a continuous
+     * observation. Passed through as-is, each pulse is a separate event to everything downstream:
+     * a fresh HomeKit notification, a fresh recording, a fresh snapshot, several times for what a
+     * person watching would call one event.
+     *
+     * Holding the signal up through the gaps collapses those back into one. It is off by default,
+     * because it is a lie about what the accessory said and only worth telling for a camera whose
+     * pulses are demonstrably one event - and how long a gap to bridge is a property of that
+     * camera, not something to guess.
+     */
+    private applyMotion(detected: boolean) {
+        clearTimeout(this.motionClearTimer);
+        this.motionClearTimer = undefined;
+
+        if (detected) {
+            this.motionDetected = true;
+            return;
+        }
+
+        const seconds = this.motionTimeout;
+        if (!seconds) {
+            this.motionDetected = false;
+            return;
+        }
+
+        // already clear: nothing to hold up, and re-arming here would let a camera that repeats
+        // `false` keep pushing the moment of clearing further away indefinitely.
+        if (!this.motionDetected)
+            return;
+
+        this.console.debug(`motion cleared; holding it on for ${seconds}s in case it resumes`);
+        this.motionClearTimer = setTimeout(() => {
+            this.motionClearTimer = undefined;
+            this.motionDetected = false;
+        }, seconds * 1000);
+    }
+
+    /** Seconds to hold motion on after the accessory clears it; 0 disables the hold. */
+    private get motionTimeout(): number {
+        const value = parseFloat(this.storage.getItem('motionTimeout'));
+        return isFinite(value) && value > 0 ? value : 0;
     }
 
     // -------------------------------------------------------------------------------------------
@@ -1516,6 +1565,18 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
                 value: this.maxBitrate,
             },
             {
+                group: 'Motion',
+                key: 'motionTimeout',
+                title: 'Motion Timeout',
+                description: 'Seconds to keep reporting motion after the camera says it has stopped. '
+                    + 'Leave at 0 to report exactly what the camera reports, which is right for a camera whose motion stays on for as long as something is moving. '
+                    + 'A camera that detects in the vendor\'s cloud tends instead to send a series of short pulses, and each gap between them starts a new event everywhere downstream - another HomeKit notification, another recording, another snapshot - for what was one thing happening. '
+                    + 'Set this longer than the gaps between those pulses and they become a single event again. Too long and genuinely separate events are merged, so raise it only as far as it needs to go.',
+                type: 'number',
+                placeholder: '0',
+                value: this.motionTimeout,
+            },
+            {
                 group: 'Stream',
                 key: 'keyframeRequests',
                 title: 'Keyframe Requests',
@@ -1631,6 +1692,14 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
         if (key === 'audioCodec' || key === 'maxBitrate' || key === 'allowBatteryPrebuffer' || key === 'keyframeRequests')
             this.onDeviceEvent(ScryptedInterface.VideoCamera, undefined);
 
+        // Turning the hold off should take effect now rather than whenever the one already running
+        // happens to expire, since the reason to turn it off is usually that it is holding motion on.
+        if (key === 'motionTimeout' && !this.motionTimeout && this.motionClearTimer) {
+            clearTimeout(this.motionClearTimer);
+            this.motionClearTimer = undefined;
+            this.motionDetected = false;
+        }
+
         // an address change has to take effect on a new connection, not the one already open.
         if (key === 'host' || key === 'port') {
             await this.release();
@@ -1672,6 +1741,8 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
     /** Tears down everything; called when the device is removed or the plugin unloads. */
     async release() {
         this.stopSensorPoll();
+        clearTimeout(this.motionClearTimer);
+        this.motionClearTimer = undefined;
         await this.stopIntercom();
         for (const session of this.sessions.keys())
             await session.stop().catch(() => { });

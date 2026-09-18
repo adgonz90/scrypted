@@ -324,7 +324,11 @@ export async function* handleFragmentsRequests(streamId: number, device: Scrypte
     const startGrace = (why: string) => {
         if (graceTimeout)
             return;
-        console.log(`${why}; this recording will end in ${graceSeconds}s unless motion resumes or HomeKit closes it first`);
+        // Narration, not an outcome: on a camera whose motion pulses this fires a couple of times
+        // per recording and becomes the bulkiest thing in the log. What it is good for - how often
+        // motion dropped and came back - is counted and reported when the recording finishes.
+        if (debugMode.verbose)
+            console.log(`${why}; this recording will end in ${graceSeconds}s unless motion resumes or HomeKit closes it first`);
         graceTimeout = setTimeout(() => {
             graceTimeout = undefined;
             console.warn(`motion has been clear for ${graceSeconds}s and HomeKit has not closed this recording; ending it`);
@@ -350,7 +354,8 @@ export async function* handleFragmentsRequests(streamId: number, device: Scrypte
         clearTimeout(graceTimeout);
         graceTimeout = undefined;
         motionResumes++;
-        console.log('motion resumed before the grace period elapsed; this recording continues');
+        if (debugMode.verbose)
+            console.log('motion resumed before the grace period elapsed; this recording continues');
     });
 
     // the prebuffer means a recording can begin after the motion that triggered it has ended.
