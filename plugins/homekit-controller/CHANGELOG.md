@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.6
+
+**Back off from a camera that is refusing streams, and stop blaming the network for it.**
+
+An Arlo Baby began rejecting every stream configuration offered, while still answering perfectly
+on its control channel. Rebroadcast restarts its prebuffer every five seconds, so the plugin
+performed a full SetupEndpoints and three configuration writes against it 143 times in ten
+minutes - a few hundred pointless exchanges an hour with the accessory least able to absorb them.
+The HAP client already reasons this way about connections; stream setup now does too. The wait
+doubles from thirty seconds to a cap of ten minutes, resets the moment a configuration is
+accepted, and Retry Best Stream skips it, since the usual reason to press that is having just
+power cycled the camera.
+
+The failure path now also waits for the session to be released rather than letting the release
+race the next attempt four seconds later. A camera frees a stream service when it is told to, and
+both of this one's were showing as in use.
+
+And the report that a camera "accepted this stream and then sent no video" no longer appears when
+the camera accepted nothing. A refused session stops with no packets exactly as a working one
+does, so the message fired on every one of those 143 attempts, blaming a firewall for a stream
+the camera had declined outright three lines earlier.
+
+
 ## 0.1.5
 
 **Say so when motion has been on implausibly long.** Motion that never once drops is not a busy

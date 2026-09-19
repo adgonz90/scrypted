@@ -1,6 +1,6 @@
 {
    "name": "@scrypted/homekit-controller",
-   "version": "0.1.5",
+   "version": "0.1.6",
    "description": "HomeKit Controller Plugin for Scrypted: pair HomeKit (HAP) accessories directly into Scrypted.",
    "scripts": {
       "scrypted-setup-project": "scrypted-setup-project",

@@ -139,6 +139,21 @@ const SESSION_SETTLE_MS = 750;
 const STUCK_MOTION_MINUTES = 30;
 
 /**
+ * Backoff after a camera refuses every stream configuration offered.
+ *
+ * A consumer that wants a stream retries until it gets one - Rebroadcast restarts its prebuffer
+ * every five seconds - and each attempt is a full SetupEndpoints plus a write per configuration.
+ * Against a camera that is refusing, that is a few hundred pointless exchanges an hour with the
+ * accessory least able to absorb them, and the same reasoning the HAP client already applies to
+ * connections: pushing at something that has stopped answering is how it is kept unable to answer.
+ *
+ * Doubling from half a minute reaches the cap in five tries, so a camera that recovers quickly is
+ * barely delayed while one that is wedged is left alone.
+ */
+const REJECTION_BACKOFF_MS = 30000;
+const REJECTION_BACKOFF_MAX_MS = 10 * 60 * 1000;
+
+/**
  * A start-up that was abandoned because something replaced the camera underneath it.
  *
  * Distinct from a failure: reinitialize does exactly this on purpose whenever the camera announces
@@ -164,6 +179,9 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
     private motionClearTimer: NodeJS.Timeout;
     private stuckMotionTimer: NodeJS.Timeout;
     private motionOnSince: number;
+    /** When the camera may next be asked for a stream, and how long the last wait was. */
+    private rejectionUntil = 0;
+    private rejectionBackoff = 0;
     private polling = false;
     private controlDescriptors = new Map<string, ControlDescriptor>();
     private controls = new Map<string, HomeKitCameraControl>();
@@ -768,6 +786,35 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
         }
     }
 
+    /** Refuses to ask a camera that has just refused, until its backoff has elapsed. */
+    private checkRejectionBackoff() {
+        const remaining = this.rejectionUntil - Date.now();
+        if (remaining <= 0)
+            return;
+        throw new Error(`the camera refused every stream configuration offered, so it is not being asked again `
+            + `for another ${Math.ceil(remaining / 1000)}s. A camera that does this while still answering on its `
+            + `control channel is usually wedged and wants a power cycle; check too whether the vendor's own app `
+            + `is holding one of its streams.`);
+    }
+
+    /** A camera that refused everything gets longer between attempts, up to the cap. */
+    private noteStreamRejected() {
+        this.rejectionBackoff = this.rejectionBackoff
+            ? Math.min(this.rejectionBackoff * 2, REJECTION_BACKOFF_MAX_MS)
+            : REJECTION_BACKOFF_MS;
+        this.rejectionUntil = Date.now() + this.rejectionBackoff;
+        this.console.warn(`the camera refused every stream configuration; waiting ${Math.round(this.rejectionBackoff / 1000)}s before asking again`);
+    }
+
+    /** One accepted configuration means the camera is answering again. */
+    private clearRejectionBackoff() {
+        if (!this.rejectionBackoff)
+            return;
+        this.console.log('the camera accepted a stream configuration again');
+        this.rejectionBackoff = 0;
+        this.rejectionUntil = 0;
+    }
+
     /**
      * Motion, with the option of holding it on briefly after the accessory drops it.
      *
@@ -1042,6 +1089,7 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
 
     async getVideoStream(options?: RequestMediaStreamOptions): Promise<MediaObject> {
         const requestedAt = Date.now();
+        this.checkRejectionBackoff();
         await this.initialize();
 
         // One session per advertised stream. A consumer asking again for a stream it already has
@@ -1139,14 +1187,15 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
             rtsp.sdp = sdpText;
 
             // stopping the session releases the service through its 'stopped' event.
-            const cleanup = () => {
-                session.stop().catch(() => { });
+            const endSession = async () => {
+                await session.stop().catch(() => { });
                 try {
                     rtsp.client.destroy();
                 }
                 catch (e) {
                 }
             };
+            const cleanup = () => void endSession();
 
             rtsp.client.on('close', cleanup);
             rtsp.client.on('error', cleanup);
@@ -1201,7 +1250,13 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
                 // ports advertised in SetupEndpoints, so silence means those packets are not
                 // arriving - a firewall, or a route that carries TCP but not inbound UDP.
                 session.once('stopped', () => {
-                    if (telemetry.firstPacketAt === undefined) {
+                    // A session the camera refused stops with no packets too, and saying the media
+                    // never arrived would point at the network when the camera declined the stream
+                    // outright - which it has already said, three lines earlier.
+                    if (!session.negotiated) {
+                        // the rejection is its own report; nothing to add.
+                    }
+                    else if (telemetry.firstPacketAt === undefined) {
                         this.console.warn('the camera accepted this stream and then sent no video at all.'
                             + ` Its media is sent over UDP to ${this.client?.localAddress ?? 'this host'}, so the usual cause is`
                             + ' a firewall or VLAN rule that permits TCP but not inbound UDP from the camera.');
@@ -1237,6 +1292,7 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
                 });
                 await session.start();
                 const negotiatedAt = Date.now();
+                this.clearRejectionBackoff();
                 this.onDeviceEvent(ScryptedInterface.Settings, undefined);
 
                 this.console.log(`streaming ${resolution.width}x${resolution.height}@${resolution.fps}`
@@ -1244,7 +1300,13 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
             }
             catch (e) {
                 this.console.error('failed to start the HomeKit stream', e);
-                cleanup();
+                // Awaited, unlike the other cleanup paths: the camera only frees the stream service
+                // when it is told to, and the next attempt is four seconds away. Racing the release
+                // against the next allocation is how a camera ends up with both of its services
+                // held by sessions nobody is using.
+                await endSession();
+                if (!session.negotiated)
+                    this.noteStreamRejected();
             }
         }).catch(e => {
             // nothing ever connected, so the service would be held for a stream with no consumer.
@@ -1573,6 +1635,11 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
         const count = this.sessions.size;
         for (const session of [...this.sessions.keys()])
             await session.stop().catch(() => { });
+
+        // Asking for this is asking to try now, which outranks a wait imposed because the camera
+        // was refusing - the usual reason to press it is having just power cycled the camera.
+        this.rejectionBackoff = 0;
+        this.rejectionUntil = 0;
 
         this.console.log(count
             ? `dropped ${count} stream(s); the next request will take the best service free at that moment`

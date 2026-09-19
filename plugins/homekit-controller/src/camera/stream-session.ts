@@ -608,6 +608,17 @@ export class HapStreamSession extends EventEmitter {
             this.buildSelectedConfiguration(command, this.selectedVariant));
     }
 
+    /**
+     * Whether the camera ever accepted a configuration for this session.
+     *
+     * A session that was refused at setup stops the same way a working one does - with no packets -
+     * so anything reasoning about silence has to tell the two apart. Blaming a firewall for a
+     * stream the camera declined outright sends the reader somewhere there is nothing to find.
+     */
+    get negotiated(): boolean {
+        return !!this.selectedVariant;
+    }
+
     /** What this session is currently asking the camera to send. */
     get currentResolution(): VideoResolution {
         return this.activeResolution ?? this.options.resolution;
