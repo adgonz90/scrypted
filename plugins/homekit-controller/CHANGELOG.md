@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.7
+
+**Try to fix a camera that is refusing streams, before settling for waiting on it.** 0.1.6 backed
+off, which protects the camera but recovers nothing: left alone it would have settled into one
+failed attempt every ten minutes, indefinitely. Three rungs now, each for a different cause, each
+tried only when the one before it did not help:
+
+1. **Reconnect.** An accessory releases a stream session when the connection that created it goes
+   away, so this clears endpoints stranded by attempts that set one up and then failed to start
+   it. Costs a pair-verify. This is what a plugin restart did by hand, and it is the common case.
+2. **Rebuild from the accessory database.** Still refusing on a connection it has just accepted
+   means the objection is to the request rather than the session behind it. The iids written to
+   come from the database read at startup, and a camera that has updated its firmware since can
+   have moved them - writing a valid value to the wrong characteristic is reported exactly like
+   writing an invalid one.
+3. **Back off**, as before, and say plainly that the camera wants a power cycle.
+
+The ladder resets on any accepted configuration, and Retry Best Stream resets it too, so a camera
+that fails once a week always gets the cheap rung first rather than inheriting a stale position.
+
+
 ## 0.1.6
 
 **Back off from a camera that is refusing streams, and stop blaming the network for it.**

@@ -182,6 +182,8 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
     /** When the camera may next be asked for a stream, and how long the last wait was. */
     private rejectionUntil = 0;
     private rejectionBackoff = 0;
+    /** How far up the recovery ladder this camera has been taken since it last streamed. */
+    private recoveryStage = 0;
     private polling = false;
     private controlDescriptors = new Map<string, ControlDescriptor>();
     private controls = new Map<string, HomeKitCameraControl>();
@@ -798,21 +800,55 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
     }
 
     /** A camera that refused everything gets longer between attempts, up to the cap. */
-    private noteStreamRejected() {
+    private async noteStreamRejected() {
+        // Rung 1. An accessory releases a stream session when the connection that created it goes
+        // away, so this is what clears endpoints stranded by attempts that set one up and then
+        // failed to start it. It is the cheapest thing that can work and it fixes the common case:
+        // nothing the camera can see distinguishes it from the plugin being restarted, which is
+        // what recovered this by hand.
+        if (this.recoveryStage === 0) {
+            this.recoveryStage = 1;
+            this.console.warn('the camera refused every stream configuration; reconnecting to release any stream '
+                + 'sessions it is still holding, then trying again');
+            await this.client?.reconnect()
+                .catch(e => this.console.warn('reconnecting failed', (e as Error).message));
+            return;
+        }
+
+        // Rung 2. Still refusing on a connection it has just accepted, so the objection is to the
+        // request rather than to the session behind it. The iids we write to come from the
+        // accessory database read when this device started; a camera that updated its firmware
+        // since can have moved them, and writing a valid value to the wrong characteristic is
+        // reported exactly like writing an invalid one. Rebuilding re-reads the database.
+        if (this.recoveryStage === 1) {
+            this.recoveryStage = 2;
+            this.console.warn('the camera refused every stream configuration again on a fresh connection; rebuilding '
+                + 'from its accessory database in case its characteristics have moved, then trying again');
+            await this.release();
+            await this.initialize()
+                .catch(e => this.console.warn('rebuilding failed', (e as Error).message));
+            return;
+        }
+
+        // Rung 3. A clean connection and a freshly read database, and it still refuses - so there
+        // is nothing further worth doing to it, and the useful thing is to stop asking.
         this.rejectionBackoff = this.rejectionBackoff
             ? Math.min(this.rejectionBackoff * 2, REJECTION_BACKOFF_MAX_MS)
             : REJECTION_BACKOFF_MS;
         this.rejectionUntil = Date.now() + this.rejectionBackoff;
-        this.console.warn(`the camera refused every stream configuration; waiting ${Math.round(this.rejectionBackoff / 1000)}s before asking again`);
+        this.console.warn(`the camera refused every stream configuration after both a reconnect and a rebuild; `
+            + `waiting ${Math.round(this.rejectionBackoff / 1000)}s before asking again. It almost certainly wants a power cycle.`);
     }
 
-    /** One accepted configuration means the camera is answering again. */
+    /** One accepted configuration means the camera is answering again, whatever rung got it there. */
     private clearRejectionBackoff() {
-        if (!this.rejectionBackoff)
+        if (!this.rejectionBackoff && !this.recoveryStage)
             return;
-        this.console.log('the camera accepted a stream configuration again');
+        if (this.rejectionBackoff)
+            this.console.log('the camera accepted a stream configuration again');
         this.rejectionBackoff = 0;
         this.rejectionUntil = 0;
+        this.recoveryStage = 0;
     }
 
     /**
@@ -1306,7 +1342,7 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
                 // held by sessions nobody is using.
                 await endSession();
                 if (!session.negotiated)
-                    this.noteStreamRejected();
+                    await this.noteStreamRejected();
             }
         }).catch(e => {
             // nothing ever connected, so the service would be held for a stream with no consumer.
@@ -1637,9 +1673,12 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
             await session.stop().catch(() => { });
 
         // Asking for this is asking to try now, which outranks a wait imposed because the camera
-        // was refusing - the usual reason to press it is having just power cycled the camera.
+        // was refusing - the usual reason to press it is having just power cycled the camera. The
+        // ladder resets with it, so the cheap rung is tried first rather than resuming where a
+        // previous failure left off against what is now effectively a different camera.
         this.rejectionBackoff = 0;
         this.rejectionUntil = 0;
+        this.recoveryStage = 0;
 
         this.console.log(count
             ? `dropped ${count} stream(s); the next request will take the best service free at that moment`
