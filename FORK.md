@@ -203,7 +203,7 @@ minor:
 |---|---|---|---|
 | `@scrypted/homekit` | 1.2.65 | **1.3.0-fork.5** | camera child device and sensor merging, motion-bounded HKSV recordings, quieter recording log |
 | `@scrypted/prebuffer-mixin` | 0.10.70 | **0.11.0-fork.1** | the `common/` AAC `pkt_size` fix, bundled |
-| `@scrypted/mqtt` | 0.0.87 | **0.1.0-fork.1** | autodiscovery and reconnect fixes |
+| `@scrypted/mqtt` | 0.0.87 | **0.1.0-fork.2** | autodiscovery and reconnect fixes |
 
 Bump the tag (`-fork.2`, and so on) on each redeploy, so the running build is identifiable. When
 upstream reaches one of these minors an update *will* appear, which is correct: the patch has to
