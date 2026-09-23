@@ -165,6 +165,56 @@ async function main() {
     check('motion fires a second time on the same subscription',
         await waitFor('motionDetected', () => camera.motionDetected, true));
     motion.updateCharacteristic(Characteristic.MotionDetected, false);
+    await waitFor('motionDetected', () => camera.motionDetected, false);
+
+    // ---- Motion Timeout: pulses become one event ------------------------------------------------
+    // A camera that detects in its vendor's cloud reports motion as pulses with gaps between them,
+    // and every gap reaches HomeKit as a fresh event - one Arlo here produced two notifications per
+    // recording. The hold bridges the gaps, and must still let go once motion has really stopped.
+    await camera.putSetting('motionTimeout', 1.5);
+
+    // sample continuously, since the failure is a brief drop that a single read would miss.
+    let droppedDuringHold = false;
+    let sampling = false;
+    const sampler = setInterval(() => {
+        if (sampling && camera.motionDetected === false)
+            droppedDuringHold = true;
+    }, 10);
+
+    motion.updateCharacteristic(Characteristic.MotionDetected, true);
+    await waitFor('motionDetected', () => camera.motionDetected, true);
+    sampling = true;
+    motion.updateCharacteristic(Characteristic.MotionDetected, false);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    motion.updateCharacteristic(Characteristic.MotionDetected, true);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    sampling = false;
+    check('with a motion timeout, a short gap between pulses never reaches Scrypted', !droppedDuringHold);
+
+    const clearedAt = Date.now();
+    motion.updateCharacteristic(Characteristic.MotionDetected, false);
+    await new Promise(resolve => setTimeout(resolve, 700));
+    check('motion is still held a moment after the camera clears it', camera.motionDetected === true);
+    const released = await waitFor('motionDetected', () => camera.motionDetected, false, 4000);
+    const heldFor = Date.now() - clearedAt;
+    check('and released once the timeout passes with no more motion',
+        released && heldFor >= 1400 && heldFor < 3000, `held ${heldFor}ms for a 1500ms timeout`);
+
+    // turning the hold off mid hold should take effect then, not when the hold would have ended.
+    motion.updateCharacteristic(Characteristic.MotionDetected, true);
+    await waitFor('motionDetected', () => camera.motionDetected, true);
+    motion.updateCharacteristic(Characteristic.MotionDetected, false);
+    await new Promise(resolve => setTimeout(resolve, 200));
+    await camera.putSetting('motionTimeout', 0);
+    check('setting the timeout to 0 during a hold clears motion immediately', camera.motionDetected === false);
+
+    // and off, the camera's own report goes straight through.
+    motion.updateCharacteristic(Characteristic.MotionDetected, true);
+    await waitFor('motionDetected', () => camera.motionDetected, true);
+    motion.updateCharacteristic(Characteristic.MotionDetected, false);
+    check('with no timeout, motion clears as soon as the camera says so',
+        await waitFor('motionDetected', () => camera.motionDetected, false, 1000));
+    clearInterval(sampler);
 
     occupancy.updateCharacteristic(Characteristic.OccupancyDetected, 1);
     check('occupancy events arrive', await waitFor('occupied', () => camera.occupied, true));

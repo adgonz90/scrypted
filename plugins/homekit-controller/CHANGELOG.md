@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.8
+
+**A camera that is switched off is no longer diagnosed as broken.** An accessory must refuse to
+start a stream while it is switched off - the stream's own service inactive, HomeKit Camera Active
+off, or Manually Disabled set, as Apple's camera specification spells out. The plugin already
+exposed those switches as controls but never consulted them when a stream was refused, so a
+camera turned off in the Home app was taken up the whole recovery ladder and finally reported as
+wanting a power cycle. The camera is now asked first, and one that says it is off is reported as
+off and checked again every thirty seconds, without touching the ladder.
+
+The ladder's policy moved into its own module so it can be tested, and has been: the order of the
+rungs, the doubling and its ten minute cap, reset on success, and that time spent switched off
+counts for nothing. Motion Timeout is now covered end to end against a real accessory, including
+that a gap between pulses never reaches Scrypted at all and that turning the hold off mid hold
+takes effect at once. Both tests were checked by breaking the code they cover.
+
+Now licensed MIT, matching the HomeKit plugin it is the mirror image of.
+
+
 ## 0.1.7
 
 **Try to fix a camera that is refusing streams, before settling for waiting on it.** 0.1.6 backed

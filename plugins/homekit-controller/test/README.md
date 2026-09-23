@@ -19,6 +19,7 @@ node test/stream-config-test.js     # TLV8 and capability parsing, against captu
 node test/stream-telemetry-test.js  # keyframe pacing and stream measurement, against simulated cameras
 node test/unicast-mdns-test.js      # resolving an accessory by address, against a hand written responder
 node test/discovery-update-test.js  # following an accessory that reboots onto a different port
+node test/stream-recovery-test.js   # what to do about a camera refusing every stream configuration
 node test/pairing-loopback.js       # pair setup, pair verify, encrypted session, events, snapshot
 node test/controls-test.js          # child device discovery and control writes, incl. timed writes
 ```

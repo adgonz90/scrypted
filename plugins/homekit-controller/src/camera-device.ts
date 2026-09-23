@@ -66,6 +66,7 @@ import {
     VideoResolution,
 } from './camera/stream-config';
 import { AUDIO_MAX_BITRATE_KBPS, AUDIO_PACKET_TIME_MS, AUDIO_PAYLOAD_TYPE, HapStreamSession } from './camera/stream-session';
+import { describeStreamingDisabled, StreamRecovery } from './camera/stream-recovery';
 import { ControlDescriptor, discoverControls, HomeKitCameraControl, seedControl } from './camera-controls';
 import { describeDevice } from './describe-device';
 import type { HomeKitControllerProvider } from './main';
@@ -139,21 +140,6 @@ const SESSION_SETTLE_MS = 750;
 const STUCK_MOTION_MINUTES = 30;
 
 /**
- * Backoff after a camera refuses every stream configuration offered.
- *
- * A consumer that wants a stream retries until it gets one - Rebroadcast restarts its prebuffer
- * every five seconds - and each attempt is a full SetupEndpoints plus a write per configuration.
- * Against a camera that is refusing, that is a few hundred pointless exchanges an hour with the
- * accessory least able to absorb them, and the same reasoning the HAP client already applies to
- * connections: pushing at something that has stopped answering is how it is kept unable to answer.
- *
- * Doubling from half a minute reaches the cap in five tries, so a camera that recovers quickly is
- * barely delayed while one that is wedged is left alone.
- */
-const REJECTION_BACKOFF_MS = 30000;
-const REJECTION_BACKOFF_MAX_MS = 10 * 60 * 1000;
-
-/**
  * A start-up that was abandoned because something replaced the camera underneath it.
  *
  * Distinct from a failure: reinitialize does exactly this on purpose whenever the camera announces
@@ -179,11 +165,15 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
     private motionClearTimer: NodeJS.Timeout;
     private stuckMotionTimer: NodeJS.Timeout;
     private motionOnSince: number;
-    /** When the camera may next be asked for a stream, and how long the last wait was. */
-    private rejectionUntil = 0;
-    private rejectionBackoff = 0;
-    /** How far up the recovery ladder this camera has been taken since it last streamed. */
-    private recoveryStage = 0;
+    /**
+     * What to do about a camera refusing every stream configuration, and when it may be asked again.
+     *
+     * A consumer that wants a stream retries until it gets one - Rebroadcast restarts its prebuffer
+     * every five seconds - and each attempt is a full SetupEndpoints plus a write per configuration.
+     * Against a camera that is refusing, that is a few hundred pointless exchanges an hour with the
+     * accessory least able to absorb them.
+     */
+    private streamRecovery = new StreamRecovery();
     private polling = false;
     private controlDescriptors = new Map<string, ControlDescriptor>();
     private controls = new Map<string, HomeKitCameraControl>();
@@ -788,26 +778,72 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
         }
     }
 
-    /** Refuses to ask a camera that has just refused, until its backoff has elapsed. */
+    /** Refuses to ask a camera that has just refused, until its wait has elapsed. */
     private checkRejectionBackoff() {
-        const remaining = this.rejectionUntil - Date.now();
-        if (remaining <= 0)
+        const remaining = this.streamRecovery.remaining();
+        if (!remaining)
             return;
         throw new Error(`the camera refused every stream configuration offered, so it is not being asked again `
             + `for another ${Math.ceil(remaining / 1000)}s. A camera that does this while still answering on its `
-            + `control channel is usually wedged and wants a power cycle; check too whether the vendor's own app `
-            + `is holding one of its streams.`);
+            + `control channel is either switched off or wedged; the log says which.`);
     }
 
-    /** A camera that refused everything gets longer between attempts, up to the cap. */
-    private async noteStreamRejected() {
+    /**
+     * Why the camera says it will not stream, if it is switched off.
+     *
+     * Read fresh rather than taken from the controls, because the question is what the camera
+     * thinks at the moment it refused. A camera that fails to answer is treated as not saying -
+     * this is a diagnosis, and an unreadable characteristic must not be mistaken for an off one.
+     */
+    private async readStreamingDisabledReason(service: HapService): Promise<string | undefined> {
+        if (!this.client || !this.accessory)
+            return undefined;
+
+        const operatingMode = findService(this.accessory, Service.CameraOperatingMode);
+        const wanted = {
+            homeKitCameraActive: operatingMode && findCharacteristic(operatingMode, Characteristic.HomeKitCameraActive),
+            manuallyDisabled: operatingMode && findCharacteristic(operatingMode, Characteristic.ManuallyDisabled),
+            streamActive: findCharacteristic(service, Characteristic.Active),
+        };
+        const present = Object.entries(wanted).filter(([, characteristic]) => !!characteristic) as [string, HapCharacteristic][];
+        if (!present.length)
+            return undefined;
+
+        try {
+            const results = await this.client.readCharacteristics(
+                present.map(([, characteristic]) => ({ aid: this.aid, iid: characteristic.iid })));
+            const reading: Record<string, unknown> = {};
+            for (const [key, characteristic] of present) {
+                const result = results.find(r => r.iid === characteristic.iid);
+                if (result && !result.status)
+                    reading[key] = result.value;
+            }
+            return describeStreamingDisabled(reading);
+        }
+        catch (e) {
+            this.console.debug('could not read the camera\'s operating mode', (e as Error).message);
+            return undefined;
+        }
+    }
+
+    /** Takes the next step up the recovery ladder after the camera refused every configuration. */
+    private async noteStreamRejected(service: HapService) {
+        const step = this.streamRecovery.next(await this.readStreamingDisabledReason(service));
+
+        // Rung 0. Switched off is not broken, and nothing further up the ladder can help it - the
+        // top rung ends by telling someone to power cycle a camera whose only problem is a switch.
+        if (step.kind === 'disabled') {
+            this.console.warn(`the camera refused to stream because ${step.reason}. Turn it back on to stream; `
+                + `checking again in ${Math.round(step.ms / 1000)}s`);
+            return;
+        }
+
         // Rung 1. An accessory releases a stream session when the connection that created it goes
         // away, so this is what clears endpoints stranded by attempts that set one up and then
         // failed to start it. It is the cheapest thing that can work and it fixes the common case:
         // nothing the camera can see distinguishes it from the plugin being restarted, which is
         // what recovered this by hand.
-        if (this.recoveryStage === 0) {
-            this.recoveryStage = 1;
+        if (step.kind === 'reconnect') {
             this.console.warn('the camera refused every stream configuration; reconnecting to release any stream '
                 + 'sessions it is still holding, then trying again');
             await this.client?.reconnect()
@@ -820,8 +856,7 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
         // accessory database read when this device started; a camera that updated its firmware
         // since can have moved them, and writing a valid value to the wrong characteristic is
         // reported exactly like writing an invalid one. Rebuilding re-reads the database.
-        if (this.recoveryStage === 1) {
-            this.recoveryStage = 2;
+        if (step.kind === 'rebuild') {
             this.console.warn('the camera refused every stream configuration again on a fresh connection; rebuilding '
                 + 'from its accessory database in case its characteristics have moved, then trying again');
             await this.release();
@@ -832,23 +867,16 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
 
         // Rung 3. A clean connection and a freshly read database, and it still refuses - so there
         // is nothing further worth doing to it, and the useful thing is to stop asking.
-        this.rejectionBackoff = this.rejectionBackoff
-            ? Math.min(this.rejectionBackoff * 2, REJECTION_BACKOFF_MAX_MS)
-            : REJECTION_BACKOFF_MS;
-        this.rejectionUntil = Date.now() + this.rejectionBackoff;
         this.console.warn(`the camera refused every stream configuration after both a reconnect and a rebuild; `
-            + `waiting ${Math.round(this.rejectionBackoff / 1000)}s before asking again. It almost certainly wants a power cycle.`);
+            + `waiting ${Math.round(step.ms / 1000)}s before asking again. It almost certainly wants a power cycle.`);
     }
 
     /** One accepted configuration means the camera is answering again, whatever rung got it there. */
     private clearRejectionBackoff() {
-        if (!this.rejectionBackoff && !this.recoveryStage)
+        if (!this.streamRecovery.active)
             return;
-        if (this.rejectionBackoff)
-            this.console.log('the camera accepted a stream configuration again');
-        this.rejectionBackoff = 0;
-        this.rejectionUntil = 0;
-        this.recoveryStage = 0;
+        this.console.log('the camera accepted a stream configuration again');
+        this.streamRecovery.reset();
     }
 
     /**
@@ -1342,7 +1370,7 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
                 // held by sessions nobody is using.
                 await endSession();
                 if (!session.negotiated)
-                    await this.noteStreamRejected();
+                    await this.noteStreamRejected(serviceState.service);
             }
         }).catch(e => {
             // nothing ever connected, so the service would be held for a stream with no consumer.
@@ -1676,9 +1704,7 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
         // was refusing - the usual reason to press it is having just power cycled the camera. The
         // ladder resets with it, so the cheap rung is tried first rather than resuming where a
         // previous failure left off against what is now effectively a different camera.
-        this.rejectionBackoff = 0;
-        this.rejectionUntil = 0;
-        this.recoveryStage = 0;
+        this.streamRecovery.reset();
 
         this.console.log(count
             ? `dropped ${count} stream(s); the next request will take the best service free at that moment`
