@@ -282,7 +282,8 @@ addSupportedType({
             }
 
             // Status Light: if this camera is a DeviceProvider with a dedicated Status Light child
-            // device (nanit-plugin-specific nativeId convention, same as Night Vision below), bind
+            // device (a nativeId ending ':statuslight' - a convention the nanit and
+            // homekit-controller plugins both follow, as with Night Vision below), bind
             // the native CameraOperatingModeIndicator characteristic directly to that child's real
             // OnOff state instead of falling back to the generic branches below - otherwise the
             // native toggle in the camera's Home app settings sheet is a disconnected dummy
@@ -337,8 +338,8 @@ addSupportedType({
             // characteristic - this is the toggle Apple's Home app shows in a camera's own
             // settings sheet for enabling/disabling automatic IR. There's no generic
             // ScryptedInterface for "night vision enable", so this looks for a specific child
-            // device nativeId suffix - a deliberate nanit-plugin-specific coupling, not a
-            // generic mechanism.
+            // device nativeId suffix - a deliberate convention shared with the nanit and
+            // homekit-controller plugins, not a generic mechanism.
             if (device.interfaces.includes(ScryptedInterface.DeviceProvider)) {
                 const nightVisionChildren = getChildDevices(device as ScryptedDevice as ScryptedDevice & DeviceProvider);
                 const nightVisionAutoDevice = nightVisionChildren

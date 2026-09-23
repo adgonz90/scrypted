@@ -6,7 +6,15 @@
         "moduleResolution": "Node16",
         "esModuleInterop": true,
         "sourceMap": true,
-        "strict": false
+        "strict": false,
+        // Same fix as prebuffer-mixin: common/src/deferred.ts and promise-utils.ts are symlinks into
+        // server/src, and following that second hop fails on Windows with TS2307. webpack has the
+        // equivalent redirect in webpack.nodejs.config.js; this makes a plain typecheck agree with it.
+        "baseUrl": ".",
+        "paths": {
+            "@scrypted/common/src/deferred": ["../../server/src/deferred"],
+            "@scrypted/common/src/promise-utils": ["../../server/src/promise-utils"]
+        }
     },
     "include": [
         "src/**/*"
