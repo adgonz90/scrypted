@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.9
+
+**The stuck-motion warning now measures what it says it measures.** Found in review, both in
+code from 0.1.4 and 0.1.5:
+
+- It was re-armed on every motion push, so it measured thirty minutes since the *latest* push
+  rather than since motion began. A stuck camera that keeps re-sending motion - the kind most
+  worth warning about - would never have been reported.
+- With a Motion Timeout set, each gap between pulses cleared its record of when motion began,
+  even though the hold kept motion on. The warning restarted on every pulse, would have said
+  "0 minutes" had it ever fired, and "motion finally cleared" was logged for motion that had not.
+
+Motion now ends in one place, when it ends for everything downstream rather than when the camera
+sends `false`, and the warning is armed once per stretch of motion. Both are covered by tests that
+fail against the previous code.
+
+Also removes a few unused imports and a leftover helper from when RTCP sender reports were sent.
+
+
 ## 0.1.8
 
 **A camera that is switched off is no longer diagnosed as broken.** An accessory must refuse to

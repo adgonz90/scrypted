@@ -902,22 +902,17 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
             if (!this.motionDetected)
                 this.motionOnSince = Date.now();
             this.motionDetected = true;
-            this.armStuckMotionWarning();
+            // Armed once per stretch of motion, not re-armed per push. Restarting it on every true
+            // would measure time since the latest push rather than since motion began, and a stuck
+            // camera that keeps re-sending true would never be reported at all.
+            if (!this.stuckMotionTimer)
+                this.armStuckMotionWarning();
             return;
         }
 
-        if (this.motionDetected && this.motionOnSince) {
-            const minutes = Math.round((Date.now() - this.motionOnSince) / 60000);
-            if (minutes >= STUCK_MOTION_MINUTES)
-                this.console.log(`motion finally cleared after ${minutes} minutes`);
-        }
-        this.motionOnSince = undefined;
-        clearTimeout(this.stuckMotionTimer);
-        this.stuckMotionTimer = undefined;
-
         const seconds = this.motionTimeout;
         if (!seconds) {
-            this.motionDetected = false;
+            this.endMotion();
             return;
         }
 
@@ -929,8 +924,28 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
         this.console.debug(`motion cleared; holding it on for ${seconds}s in case it resumes`);
         this.motionClearTimer = setTimeout(() => {
             this.motionClearTimer = undefined;
-            this.motionDetected = false;
+            this.endMotion();
         }, seconds * 1000);
+    }
+
+    /**
+     * Motion has actually stopped, as far as anything downstream is concerned.
+     *
+     * Kept apart from the accessory's own `false`, because with a hold those are different
+     * moments: a pulse gap is a `false` from the camera while motion stays on here. Doing this
+     * bookkeeping on the camera's `false` instead would restart the stuck-motion clock on every
+     * gap, and report a stretch of motion as over while it was still being held.
+     */
+    private endMotion() {
+        if (this.motionDetected && this.motionOnSince) {
+            const minutes = Math.round((Date.now() - this.motionOnSince) / 60000);
+            if (minutes >= STUCK_MOTION_MINUTES)
+                this.console.log(`motion finally cleared after ${minutes} minutes`);
+        }
+        this.motionOnSince = undefined;
+        clearTimeout(this.stuckMotionTimer);
+        this.stuckMotionTimer = undefined;
+        this.motionDetected = false;
     }
 
     /**
@@ -1868,7 +1883,7 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
         if (key === 'motionTimeout' && !this.motionTimeout && this.motionClearTimer) {
             clearTimeout(this.motionClearTimer);
             this.motionClearTimer = undefined;
-            this.motionDetected = false;
+            this.endMotion();
         }
 
         // an address change has to take effect on a new connection, not the one already open.

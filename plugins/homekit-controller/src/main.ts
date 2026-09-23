@@ -7,7 +7,6 @@
 
 import sdk, {
     AdoptDevice,
-    Device,
     DeviceCreator,
     DeviceCreatorSettings,
     DeviceDiscovery,
@@ -25,7 +24,7 @@ import { HomeKitCamera } from './camera-device';
 import { HapClient } from './hap/client';
 import { HapConnection } from './hap/connection';
 import { DiscoveredAccessory, HapDiscovery } from './hap/discovery';
-import { PairingData, pairSetup, pairVerify } from './hap/pairing';
+import { PairingData, pairSetup } from './hap/pairing';
 import { describeDevice } from './describe-device';
 import { HapAccessory } from './hap/types';
 import { Category } from './hap/uuids';

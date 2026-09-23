@@ -40,8 +40,6 @@ import {
     SetupEndpointsTLV,
     SRTPCryptoSuite,
     SRTPParametersTLV,
-    StreamingStatus,
-    StreamingStatusTLV,
     VideoAttributesTLV,
     VideoCodecParametersTLV,
     VideoCodecType,
@@ -165,13 +163,6 @@ function isRtcp(packet: Buffer): boolean {
     return payloadType >= 64 && payloadType <= 95;
 }
 
-function ntpTimestamp(): bigint {
-    const now = Date.now();
-    const seconds = BigInt(Math.floor(now / 1000) + 2208988800);
-    const fraction = BigInt(Math.floor((now % 1000) / 1000 * 0x100000000));
-    return (seconds << 32n) | fraction;
-}
-
 export interface StreamSessionStats {
     videoPackets: number;
     audioPackets: number;
@@ -277,7 +268,7 @@ export class HapStreamSession extends EventEmitter {
             throw new Error('stream session already started');
         this.started = true;
 
-        const { client, aid } = this.options;
+        const { client } = this.options;
 
         await client.ensureConnected();
         const localAddress = client.localAddress;

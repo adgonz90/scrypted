@@ -183,6 +183,8 @@ async function main() {
 
     motion.updateCharacteristic(Characteristic.MotionDetected, true);
     await waitFor('motionDetected', () => camera.motionDetected, true);
+    const onSince = camera.motionOnSince;
+    const stuckTimer = camera.stuckMotionTimer;
     sampling = true;
     motion.updateCharacteristic(Characteristic.MotionDetected, false);
     await new Promise(resolve => setTimeout(resolve, 500));
@@ -190,6 +192,17 @@ async function main() {
     await new Promise(resolve => setTimeout(resolve, 300));
     sampling = false;
     check('with a motion timeout, a short gap between pulses never reaches Scrypted', !droppedDuringHold);
+
+    // the stuck-motion warning measures from when motion began, and a bridged gap is not an end:
+    // treating the camera's false as one restarted that clock on every pulse.
+    check('a bridged gap does not restart the measure of how long motion has been on',
+        onSince !== undefined && camera.motionOnSince === onSince, `${onSince} -> ${camera.motionOnSince}`);
+    check('nor re-arm the stuck-motion warning', stuckTimer !== undefined && camera.stuckMotionTimer === stuckTimer);
+
+    // and a camera that repeats true while motion is already on must not push the warning back.
+    camera.applyMotion(true);
+    camera.applyMotion(true);
+    check('repeated motion pushes do not restart the stuck-motion warning', camera.stuckMotionTimer === stuckTimer);
 
     const clearedAt = Date.now();
     motion.updateCharacteristic(Characteristic.MotionDetected, false);
