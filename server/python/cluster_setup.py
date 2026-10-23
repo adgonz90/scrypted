@@ -258,7 +258,13 @@ async def cluster_listen_zero(
 ) -> ClusterServerListener:
     SCRYPTED_CLUSTER_ADDRESS = os.getenv("SCRYPTED_CLUSTER_ADDRESS")
     if not SCRYPTED_CLUSTER_ADDRESS or SCRYPTED_CLUSTER_ADDRESS == "127.0.0.1":
-        server = await asyncio.start_server(callback, host=None, port=0)
+        # Bind loopback explicitly. host=None opens one socket per address family, and with
+        # port=0 each gets its own random port - so sockets[0] below is the IPv4 or the IPv6 one
+        # depending on resolver order, which varies from one start to the next. Peers always
+        # connect to 127.0.0.1, so whenever the IPv6 socket comes first the advertised port has
+        # nothing listening on IPv4 and every connection is refused. Only loopback peers exist
+        # without a cluster address, so this also stops the port being exposed on every interface.
+        server = await asyncio.start_server(callback, host="127.0.0.1", port=0)
         port = server.sockets[0].getsockname()[1]
         return {
             "server": server,
