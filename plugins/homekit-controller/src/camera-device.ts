@@ -102,6 +102,14 @@ const HAP_CHARGE_STATE: Record<number, ChargeState> = {
     2: ChargeState.NotCharging,
 };
 
+/** A sensor reading rounded to `decimals` places; anything that is not a finite number passes through. */
+export function roundReading(value: any, decimals: number): any {
+    if (typeof value !== 'number' || !isFinite(value))
+        return value;
+    const scale = 10 ** decimals;
+    return Math.round(value * scale) / scale;
+}
+
 // HAP's AirQuality characteristic is an ordinal 0-5 that lines up with Scrypted's enum.
 const HAP_AIR_QUALITY: Record<number, AirQuality> = {
     0: AirQuality.Unknown,
@@ -563,15 +571,23 @@ export class HomeKitCamera extends ScryptedDeviceBase implements VideoCamera, Ca
         // Environmental sensors. Baby monitors in particular carry these, and Scrypted's HomeKit
         // plugin surfaces temperature and humidity as linked services on the camera accessory, so
         // they survive the round trip back into the Home app.
+        //
+        // Rounded before they are published. HAP carries these as 32-bit floats, so 41.4 arrives as
+        // 41.400002, and a camera that reports in 0.1 steps changes on almost every reading. Each
+        // change is an event to HomeKit, Home Assistant and every other listener, and a line in the
+        // server log; Scrypted drops a property assignment that does not change the value, so
+        // rounding is what stops the flood. Whole percent for humidity, which is what the Home
+        // app shows and more precision than these sensors have. Tenths for temperature, because a
+        // whole degree Celsius is nearly two Fahrenheit and too coarse for a nursery.
         const temperature = findService(this.accessory, Service.TemperatureSensor);
         if (temperature) {
             // HAP always reports Celsius, which is what Scrypted expects.
-            bind(temperature, Characteristic.CurrentTemperature, value => this.temperature = value);
+            bind(temperature, Characteristic.CurrentTemperature, value => this.temperature = roundReading(value, 1));
         }
 
         const humidity = findService(this.accessory, Service.HumiditySensor);
         if (humidity) {
-            bind(humidity, Characteristic.CurrentRelativeHumidity, value => this.humidity = value);
+            bind(humidity, Characteristic.CurrentRelativeHumidity, value => this.humidity = roundReading(value, 0));
         }
 
         const airQuality = findService(this.accessory, Service.AirQualitySensor);

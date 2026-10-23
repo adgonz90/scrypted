@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.10
+
+**Temperature and humidity are rounded before they are published.** HAP carries both as 32-bit
+floats, so 41.4 arrives as 41.400002, and a camera reporting in 0.1 steps changes on almost every
+reading. Each change is an event to HomeKit, Home Assistant and any other listener, and a line in
+the Scrypted server log, which logs every property change at info. Scrypted drops an assignment
+that leaves the value unchanged, so rounding is what stops it: the Arlo Baby's humidity climbing
+41.5 to 43.1 had been seventeen events.
+
+Humidity to the whole percent, which is what the Home app shows and more precision than these
+sensors have. Temperature to the tenth: a whole degree Celsius is nearly two Fahrenheit, too
+coarse for a nursery, and temperature changes rarely enough that tenths cost almost nothing.
+
+Also rebuilt against current upstream, including its newer werift; every suite passes on it.
+
+
 ## 0.1.9
 
 **The stuck-motion warning now measures what it says it measures.** Found in review, both in

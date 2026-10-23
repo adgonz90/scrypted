@@ -31,7 +31,7 @@ const { Accessory, Categories, Characteristic, Service, uuid, HAPStorage, SRTPCr
 const sdkStub = require('./sdk-stub.js');
 const { HapConnection } = require(path.join(SRC, 'hap/connection.ts'));
 const { pairSetup } = require(path.join(SRC, 'hap/pairing.ts'));
-const { HomeKitCamera } = require(path.join(SRC, 'camera-device.ts'));
+const { HomeKitCamera, roundReading } = require(path.join(SRC, 'camera-device.ts'));
 
 const PORT = 51843;
 const PINCODE = '031-45-154';
@@ -231,6 +231,19 @@ async function main() {
 
     occupancy.updateCharacteristic(Characteristic.OccupancyDetected, 1);
     check('occupancy events arrive', await waitFor('occupied', () => camera.occupied, true));
+
+    // ---- rounding -------------------------------------------------------------------------------
+    // Checked on the function rather than end to end: hap-nodejs snaps values to the characteristic's
+    // step before they leave the test accessory, so a push through it arrives rounded whatever this
+    // plugin does. Real cameras do not - the Arlo here sends 41.400002 - which is the point of it.
+    check('humidity is published to the whole percent',
+        roundReading(41.400002, 0) === 41 && roundReading(43.5, 0) === 44,
+        `${roundReading(41.400002, 0)}, ${roundReading(43.5, 0)}`);
+    check('temperature is published to the tenth, without float noise',
+        roundReading(22.799999, 1) === 22.8 && roundReading(23.200001, 1) === 23.2 && roundReading(-3.26, 1) === -3.3,
+        `${roundReading(22.799999, 1)}, ${roundReading(23.200001, 1)}, ${roundReading(-3.26, 1)}`);
+    check('a reading that is not a number is passed through untouched',
+        roundReading(null, 1) === null && roundReading(undefined, 0) === undefined && Number.isNaN(roundReading(NaN, 1)));
 
     temperature.updateCharacteristic(Characteristic.CurrentTemperature, 23);
     check('temperature events arrive', await waitFor('temperature', () => camera.temperature, 23));
