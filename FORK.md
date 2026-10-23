@@ -27,9 +27,10 @@ Compare with `git fetch upstream && git log --oneline upstream/main..HEAD`.
 
 ### Audio — the one that matters most
 
-**`9413130b4` fix(common): stop corrupting AAC audio with an oversized RTP pkt_size**
+**`d0eba71de` fix(common): stop corrupting AAC audio with an oversized RTP pkt_size**
 
-`createRtspParser()` in `common/src/rtsp-server.ts` hardcoded `-pkt_size 32000` on every RTSP
+`createRtspParser()` in `common/src/rtp-codec.ts` (upstream moved it out of `rtsp-server.ts` in
+October 2026; the fix was re-applied there) hardcoded `-pkt_size 32000` on every RTSP
 output. That applies to **audio as well as video**, and AAC-hbr packs as many access units into a
 packet as the budget allows. A camera sending 24 kbps mono AAC has ~70-byte frames, so a large
 budget crams hundreds of AUs into one RTP packet — and ffmpeg's own depacketizer then rejects a
@@ -70,7 +71,7 @@ commit message carries the full table.
 
 ### HomeKit
 
-**`852a99961` feat(homekit): merge camera child devices and sensors onto the accessory**
+**`70bdef1a2` feat(homekit): merge camera child devices and sensors onto the accessory**
 
 Cameras that are also `DeviceProvider`s exposed their children as separate accessories, and
 sensor interfaces on the camera itself weren't exposed at all. Now:
@@ -91,16 +92,32 @@ and Status Light and Night Vision Automatic are deliberately excluded from the s
 because they're bound as native camera characteristics instead — look for them in the camera's
 settings sheet, not the accessory list.
 
-**`2a62244ae` fix(homekit): repair plugin build on Windows**
+**`36ed25ff3` fix(homekit): repair plugin build on Windows**
 
 - The `AccessoryInfo.js` loader rule matched a literal forward-slash path; webpack's resource
   paths use backslashes on Windows, so the rule never matched and the loader silently never ran.
 - Aliased `@scrypted/common/src/deferred` and `promise-utils` to their real files (see the
   double-hop note under prebuffer-mixin below).
 
+**Service names.** Upstream (#2183) now names every grouped service through `setServiceName`, as
+`<device> <kind>` - "Front Entrance Motion". This fork uses the helper too, but keeps the camera's
+own sensor tiles as the kind alone - "Motion", "Temperature", "Humidity", "Sound" - because they sit
+inside the camera's accessory in the Home app, where the camera's name only repeats. A deliberate
+divergence; changing it renames tiles in the Home app.
+
+**Upstream's homekit cannot currently be built outside koush's machine.** Since its HomeKit Secure
+Video 3 work (`bf43c8b2f`, 2026-09-15), `plugins/homekit/package.json` points
+`@homebridge/hap-nodejs` at `../../homekit-scratchpad/HAP-NodeJS`, a local checkout, and the code
+imports `SecureVideoController`, which no published hap-nodejs has - not 2.2.3, not 2.2.4-beta.2,
+and none of the branches of `koush/HAP-NodeJS`. The npm release of `@scrypted/homekit` works
+because it ships pre-built. Until that hap-nodejs is published, this fork's homekit source tracks
+upstream faithfully but will not build; the deployed **1.3.0-fork.5** was built from the last
+buildable base and keeps running. This fork's `package.json` names `^2.1.3` where upstream names
+the local path, so `npm install` still works and homekit-controller's tests can borrow it.
+
 ### Rebroadcast
 
-**`d4b3d48ef` fix(prebuffer-mixin): repair plugin build on Windows**
+**`0a2192bd1` fix(prebuffer-mixin): repair plugin build on Windows**
 
 Building failed with `TS2307: Cannot find module '@scrypted/common/src/deferred'`.
 
@@ -116,7 +133,7 @@ because homekit doesn't import those two modules directly.
 
 ### MQTT
 
-**`f0a386a53` feat(mqtt): nest child devices under their parent and publish dimmables as lights**
+**`5804d62a8` feat(mqtt): nest child devices under their parent and publish dimmables as lights**
 
 - `via_device` on discovered entities so a device with a real provider nests under it in Home
   Assistant (a camera's child switches appear under the camera). Root-level devices are their own
@@ -125,7 +142,7 @@ because homekit doesn't import those two modules directly.
   a switch that drops the brightness channel — and the redundant switch entity is suppressed.
 - `AudioVolumeControl` added to the discovery map.
 
-**`2de7daf27` fix(mqtt): correct HA unit/device_class in autodiscovery, fix reconnect error burst**
+**`540b858b2` fix(mqtt): correct HA unit/device_class in autodiscovery, fix reconnect error burst**
 
 - Publish temperature as `°C` rather than the raw enum, so HA recognises it and can convert.
 - Set `device_class` on discovered entities so HA picks correct icons and behaviour.
@@ -135,7 +152,7 @@ because homekit doesn't import those two modules directly.
 
 ### SDK
 
-**`905ca0b5f` fix(sdk): dispatch scrypted-webpack/deploy/etc by npm_lifecycle_script on Windows**
+**`8ab4c6958` fix(sdk): dispatch scrypted-webpack/deploy/etc by npm_lifecycle_script on Windows**
 
 `bin/cli.js` chose which tool to run from `path.basename(process.argv[1])`, which only works when
 npm installs bins as POSIX symlinks. On Windows npm generates `.cmd`/`.ps1` shims that invoke
@@ -143,6 +160,28 @@ npm installs bins as POSIX symlinks. On Windows npm generates `.cmd`/`.ps1` shim
 `Unknown command: cli.js`. Falls back to `npm_lifecycle_script`.
 
 **Without this, nothing in this repo builds on Windows.**
+
+### Server — committed, not deployed
+
+**`18f3d5bba` fix(server/python): bind the cluster listener to loopback, not every address family**
+
+Without a cluster address, `cluster_listen_zero` in `server/python/cluster_setup.py` called
+`start_server(host=None, port=0)`. That opens one socket per address family, each on its own random
+port, and advertises whichever comes first - IPv4 or IPv6 depending on resolver order, which varies
+from one start to the next. Peers always dial `127.0.0.1`, so whenever IPv6 came first every
+connection to that Python plugin's objects was refused:
+
+```
+failure ipc connect Error: connect ECONNREFUSED 127.0.0.1:34025
+```
+
+Seen on the OpenCV plugin, once per Nanit motion cycle. Harmless - the server falls back to the
+plugin's own channel - but noisy, and restarting the plugin is a coin flip. Reproduced on the Pi:
+two of three starts advertised the IPv6 port and were refused; bound to `127.0.0.1`, all connect.
+
+**This one does not reach the Pi.** The server runs from the Home Assistant add-on image, not from
+this checkout, so the fix only takes effect if upstream adopts it. Still present in upstream's
+server 0.148.0.
 
 ## Original work: the HomeKit Controller plugin
 
@@ -201,8 +240,8 @@ minor:
 
 | Plugin | Upstream | Here | Carries |
 |---|---|---|---|
-| `@scrypted/homekit` | 1.2.65 | **1.3.0-fork.5** | camera child device and sensor merging, motion-bounded HKSV recordings, quieter recording log |
-| `@scrypted/prebuffer-mixin` | 0.10.70 | **0.11.0-fork.1** | the `common/` AAC `pkt_size` fix, bundled |
+| `@scrypted/homekit` | 1.2.71 | **1.3.0-fork.5** | camera child device and sensor merging, motion-bounded HKSV recordings, quieter recording log - deployed build predates upstream's HKSV3, see above |
+| `@scrypted/prebuffer-mixin` | 0.10.70 | **0.11.0-fork.2** | the `common/` AAC `pkt_size` fix, bundled |
 | `@scrypted/mqtt` | 0.0.87 | **0.1.0-fork.2** | autodiscovery and reconnect fixes |
 
 Bump the tag (`-fork.2`, and so on) on each redeploy, so the running build is identifiable. When
