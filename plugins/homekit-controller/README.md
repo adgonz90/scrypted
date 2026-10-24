@@ -145,7 +145,38 @@ says detection is armed. A HomeKit camera streams locally, so it keeps working p
 network with no route out — but several vendors run the *detection* in their cloud rather than on
 the camera, and one that cannot reach it reports no motion at all while behaving correctly in every
 other respect. An Arlo Baby does exactly this. Neither the plugin nor HomeKit can tell that apart
-from a quiet nursery, so it is worth ruling out first.
+from a quiet nursery, so it is worth ruling out first. If the internet is fine, power cycle the
+camera: an Arlo Baby here once stopped reporting motion for three days while streaming normally,
+and a reboot was what brought it back.
+
+### Motion that arrives in pulses
+
+Some cameras report motion as a level that stays on for as long as something moves; others send
+a series of short pulses with gaps between them - typical of detection done in a vendor's cloud.
+Every gap reaches Scrypted as motion ending and starting again, so one thing happening becomes
+several recordings, several notifications and several snapshots.
+
+**Motion Timeout** (Settings → Motion, in seconds, off by default) keeps reporting motion for that
+long after the camera says it has stopped. A pulse inside the window never reaches anything
+downstream. The cost is that motion ends that much later everywhere: each recording runs up to the
+timeout longer, and a Home Assistant automation waiting for motion to clear fires that much later.
+Too long a value merges genuinely separate events.
+
+Start small, say five seconds, and read the HomeKit plugin's recording summaries: `motion resumed
+Nx during it` counts the gaps still getting through, so a camera where it is often above zero wants
+a longer timeout. Video Analysis has the same idea for its own motion as **Motion Duration**.
+
+The plugin also warns when motion has been on for thirty minutes without a single break. That is
+not a busy room; it is something that moves and is not alive - a ceiling fan clipping the frame
+did this here - and HomeKit records it and then discards every clip. An activity zone in the
+camera's own app is the fix.
+
+### Temperature and humidity
+
+Published rounded: humidity to the whole percent, temperature to the tenth of a degree. HAP sends
+them as 32-bit floats (41.4 arrives as 41.400002) and a camera reporting in 0.1 steps changes on
+nearly every reading; Scrypted only publishes a value that changes, so rounding is what keeps
+HomeKit, Home Assistant and the server log from seeing an event every few seconds.
 
 ### Cameras that report a battery
 
