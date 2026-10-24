@@ -191,6 +191,14 @@ two of three starts advertised the IPv6 port and were refused; bound to `127.0.0
 this checkout, so the fix only takes effect if upstream adopts it. Still present in upstream's
 server 0.148.0.
 
+**Worked around on the Pi with `PYTHONHASHSEED=1`.** The order is random because `asyncio` puts the
+two addresses into a `set`, whose order follows Python's per-process string hash seed; fixing the
+seed fixes the order. Seeds 1 and 2 put IPv4 first on every start on the Pi's Python 3.12.3, seeds
+0 and 3 never did. The server loads `/data/scrypted_data/.env` at boot and Python plugins inherit
+its environment, so that file now holds `PYTHONHASHSEED=1`. If a later image ships a different
+Python and the refusals return, re-test seeds and pick another. Remove it if upstream ever fixes
+the bind.
+
 ## Original work: the HomeKit Controller plugin
 
 `plugins/homekit-controller/` is **not a patch**. It is a new plugin written from scratch in this
