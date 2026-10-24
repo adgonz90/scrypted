@@ -110,10 +110,18 @@ Video 3 work (`bf43c8b2f`, 2026-09-15), `plugins/homekit/package.json` points
 `@homebridge/hap-nodejs` at `../../homekit-scratchpad/HAP-NodeJS`, a local checkout, and the code
 imports `SecureVideoController`, which no published hap-nodejs has - not 2.2.3, not 2.2.4-beta.2,
 and none of the branches of `koush/HAP-NodeJS`. The npm release of `@scrypted/homekit` works
-because it ships pre-built. Until that hap-nodejs is published, this fork's homekit source tracks
-upstream faithfully but will not build; the deployed **1.3.0-fork.5** was built from the last
-buildable base and keeps running. This fork's `package.json` names `^2.1.3` where upstream names
-the local path, so `npm install` still works and homekit-controller's tests can borrow it.
+because it ships pre-built.
+
+**So `plugins/homekit` is pinned** to upstream **1.2.65**, the last release before HKSV3, plus this
+fork's patches, plus four later upstream fixes that do not depend on HKSV3: libopus decoding for
+HKSV recordings (#2158), the streaming fix #2166, the camera-streaming half of the RTSP keepalive
+fix, and `setServiceName` from #2183. Not carried: the stream stutter fixes (`f37f1bdbb`), which
+are mostly HKSV3 multi-tier RTP. Deployed as **1.3.0-fork.6**.
+
+**Every upstream pull will conflict in `plugins/homekit` until the pin is dropped.** Resolve by
+keeping this fork's copy, then check upstream's new homekit commits for anything that does not
+touch HKSV3 and is worth backporting. Drop the pin once a hap-nodejs with `SecureVideoController`
+is published.
 
 ### Rebroadcast
 
@@ -240,7 +248,7 @@ minor:
 
 | Plugin | Upstream | Here | Carries |
 |---|---|---|---|
-| `@scrypted/homekit` | 1.2.71 | **1.3.0-fork.5** | camera child device and sensor merging, motion-bounded HKSV recordings, quieter recording log - deployed build predates upstream's HKSV3, see above |
+| `@scrypted/homekit` | 1.2.71 | **1.3.0-fork.6** | camera child device and sensor merging, motion-bounded HKSV recordings, quieter recording log - **pinned to 1.2.65**, see above |
 | `@scrypted/prebuffer-mixin` | 0.10.70 | **0.11.0-fork.2** | the `common/` AAC `pkt_size` fix, bundled |
 | `@scrypted/mqtt` | 0.0.87 | **0.1.0-fork.2** | autodiscovery and reconnect fixes |
 
