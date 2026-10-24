@@ -144,9 +144,8 @@ export async function* handleFragmentsRequests(streamId: number, device: Scrypte
 
     const media = await device.getVideoStream({
         destination: 'remote-recorder',
-        video :{
+        video: {
             codec: 'h264',
-            alternateCodecs: ['h264', 'h265'],
         },
         audio: {
             codec: 'aac',
@@ -158,9 +157,6 @@ export async function* handleFragmentsRequests(streamId: number, device: Scrypte
     const noAudio = ffmpegInput.mediaStreamOptions && ffmpegInput.mediaStreamOptions.audio === null;
     const audioCodec = ffmpegInput.mediaStreamOptions?.audio?.codec;
     const videoCodec = ffmpegInput.mediaStreamOptions?.video?.codec;
-
-    const isHevc = videoCodec?.toLowerCase() === 'h265' || videoCodec?.toLowerCase() === 'hevc';
-
     const isDefinitelyNotAAC = !audioCodec || audioCodec.toLowerCase().indexOf('aac') === -1;
     const needsFFmpeg = debugMode.video || debugMode.video
         || !ffmpegInput.url.startsWith('tcp://')
@@ -254,18 +250,11 @@ export async function* handleFragmentsRequests(streamId: number, device: Scrypte
             );
         }
         else {
-            if (!isHevc)
-                checkCompatibleCodec(console, device, videoCodec);
+            checkCompatibleCodec(console, device, videoCodec)
             videoArgs.push(
                 '-vcodec', 'copy',
             );
-            if (isHevc)
-                videoArgs.push('-tag:v', 'hvc1');
         }
-
-        // The HSV3 HDS receiver expects producer reference time on media fragments.
-        if (isHevc)
-            videoArgs.push('-write_prft', 'wallclock');
 
         console.log(`motion recording starting`);
         session = await startFFMPegFragmentedMP4Session(inputArguments, audioArgs, videoArgs, console);
@@ -428,11 +417,6 @@ export async function* handleFragmentsRequests(streamId: number, device: Scrypte
                     moov = undefined;
                 }
             }
-
-            // tvOS 27 requires zero prft flags for HSV3 recording; FFmpeg's 0x18 flags
-            // cause fragment date extraction to fail and can crash homed.
-            if (isHevc && type === 'prft' && data.length >= 4)
-                data.writeUIntBE(0, 1, 3);
 
             // every moov/moof frame designates an iframe?
             pending.push(header, data);

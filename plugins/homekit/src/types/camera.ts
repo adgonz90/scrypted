@@ -1,16 +1,12 @@
-import type { Resolution, RTCSignalingChannel } from '@scrypted/sdk';
+import { Deferred } from '@scrypted/common/src/deferred';
 import sdk, { AudioSensor, Camera, DeviceProvider, HumiditySensor, Intercom, MotionSensor, OnOff, ScryptedDevice, ScryptedDeviceType, ScryptedInterface, Thermometer, VideoCamera, VideoCameraConfiguration } from '@scrypted/sdk';
-import { createCameraStorageSettings } from '../camera-mixin';
 import { DummyDevice, addSupportedType, bindCharacteristic } from '../common';
-import { AudioRecordingCodec, AudioRecordingCodecType, AudioRecordingSamplerate, AudioStreamingCodec, AudioStreamingCodecType, AudioStreamingSamplerate, CameraController, CameraRecordingConfiguration, CameraRecordingDelegate, CameraRecordingOptions, CameraStreamingOptions, Characteristic, CharacteristicEventTypes, H264Level, H264Profile, MediaContainerType, RecordingPacket, SRTPCryptoSuites, SecureVideoController, Service, VideoCodecType, WithUUID } from '../hap';
+import { AudioRecordingCodec, AudioRecordingCodecType, AudioRecordingSamplerate, AudioStreamingCodec, AudioStreamingCodecType, AudioStreamingSamplerate, CameraController, CameraRecordingConfiguration, CameraRecordingDelegate, CameraRecordingOptions, CameraStreamingOptions, Characteristic, CharacteristicEventTypes, H264Level, H264Profile, MediaContainerType, RecordingPacket, SRTPCryptoSuites, Service, VideoCodecType, WithUUID } from '../hap';
 import type { HomeKitPlugin } from '../main';
 import { setServiceName } from '../service-names';
-import { createMultiTierRtpDelegate } from './camera/camera-multitier-rtp';
 import { handleFragmentsRequests, iframeIntervalSeconds } from './camera/camera-recording';
-import { createSecureVideoController, secureVideoCmafEnabled } from './camera/camera-secure-video';
 import { createCameraStreamingDelegate } from './camera/camera-streaming';
 import { FORCE_OPUS } from './camera/camera-utils';
-import { createHomeKitWebRTCDelegate } from './camera/camera-webrtc';
 import { getChildDevices, makeAccessory, mergeLightDevicesByType, mergeOnOffDevicesByType, mergeVolumeDevicesByType } from './common';
 
 const { deviceManager, systemManager } = sdk;
@@ -22,11 +18,9 @@ addSupportedType({
     probe(device: DummyDevice) {
         return device.interfaces.includes(ScryptedInterface.VideoCamera);
     },
-    async getAccessory(device: ScryptedDevice & VideoCamera & VideoCameraConfiguration & Camera & MotionSensor & AudioSensor & Intercom & OnOff & Resolution, homekitPlugin: HomeKitPlugin) {
+    async getAccessory(device: ScryptedDevice & VideoCamera & VideoCameraConfiguration & Camera & MotionSensor & AudioSensor & Intercom & OnOff, homekitPlugin: HomeKitPlugin) {
         const console = deviceManager.getMixinConsole(device.id, undefined);
         const storage = deviceManager.getMixinStorage(device.id, undefined);
-        const cameraStorage = createCameraStorageSettings({ storage, onDeviceEvent: undefined });
-        const secureVideo3 = cameraStorage.values.secureVideo3;
         const twoWayAudio = device.interfaces?.includes(ScryptedInterface.Intercom);
 
         const forceOpus = FORCE_OPUS;
@@ -114,7 +108,7 @@ addSupportedType({
 
         let configuration: CameraRecordingConfiguration;
         const openRecordingStreams = new Map<number, AsyncGenerator<RecordingPacket>>();
-        if (isRecordingEnabled || secureVideo3) {
+        if (isRecordingEnabled) {
             recordingDelegate = {
                 updateRecordingConfiguration(newConfiguration: CameraRecordingConfiguration) {
                     configuration = newConfiguration;
@@ -198,39 +192,28 @@ addSupportedType({
 
         const delegate = createCameraStreamingDelegate(device, console, storage, homekitPlugin);
 
-        const controller = secureVideo3
-            ? createSecureVideoController(accessory, delegate.handleSnapshotRequest, console, recordingDelegate,
-                tiers => createMultiTierRtpDelegate(device, tiers, console, storage),
-                tiers => createHomeKitWebRTCDelegate(systemManager.getDeviceById<RTCSignalingChannel>(device.id), console, tiers[0]),
-                device.resolution)
-            : new CameraController({
-                cameraStreamCount: 8,
-                delegate,
-                streamingOptions,
-                recording: !isRecordingEnabled ? undefined : {
-                    options: recordingOptions,
-                    delegate: recordingDelegate,
-                },
-                sensors: {
-                    motion: isRecordingEnabled,
-                },
-            });
+        const controller = new CameraController({
+            cameraStreamCount: 8,
+            delegate,
+            streamingOptions,
+            recording: !isRecordingEnabled ? undefined : {
+                options: recordingOptions,
+                delegate: recordingDelegate,
+            },
+            sensors: {
+                motion: isRecordingEnabled,
+            },
+        });
 
         accessory.configureController(controller);
 
-        if (controller instanceof SecureVideoController) {
-            console.log('HomeKit Secure Video 3 multi-tier RTP, SFrame WebRTC, and HDS recording enabled.');
-            if (secureVideoCmafEnabled)
-                console.log('HSV3 CMAF services enabled for diagnostics; clip production is not implemented.');
-            // logSecureVideoRequests(accessory, controller, console);
-        }
-
         // Temperature/Humidity/Audio detection aren't part of HAP's CameraController - add them as
         // ordinary linked services on the camera's own accessory, same pattern sensor.ts already
-        // uses for standalone Sensor-type accessories. Each service needs a distinct subtype so
-        // they don't collide. Named by sensor kind alone rather than upstream's "<camera> <kind>":
-        // these sit inside the camera's own accessory in the Home app, where the camera's name
-        // would only repeat.
+        // uses for standalone Sensor-type accessories. Unlike sensor.ts (where device.name already
+        // identifies a single-purpose device), device here is the shared camera - each service
+        // still needs a distinct subtype (so they don't collide), but the display name is just the
+        // sensor kind, not prefixed with the camera's name - Home app already shows these nested
+        // under the camera's own accessory, so repeating its name would be redundant.
         if (device.interfaces.includes(ScryptedInterface.Thermometer)) {
             const service = accessory.addService(Service.TemperatureSensor, 'Temperature', 'Thermometer');
             setServiceName(service, 'Temperature');
@@ -252,7 +235,7 @@ addSupportedType({
                 () => !!device.audioDetected);
         }
 
-        if (controller.motionService && isRecordingEnabled) {
+        if (controller.motionService) {
             const motionDevice = device;
             if (!motionDevice) {
                 return;
@@ -261,6 +244,8 @@ addSupportedType({
             const motionDetected = () => !!motionDevice.motionDetected;
 
             const { motionService } = controller;
+            // The sensor kind alone, like the other tiles on this camera, rather than upstream's
+            // "<camera> Motion": it sits inside the camera's own accessory, where the name only repeats.
             setServiceName(motionService, 'Motion');
             bindCharacteristic(motionDevice,
                 ScryptedInterface.MotionSensor,

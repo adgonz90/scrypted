@@ -3,41 +3,36 @@ import { RtpPacket } from '@koush/werift-src/packages/rtp/src/rtp/rtp';
 import type { Config } from '@koush/werift-src/packages/rtp/src/srtp/session';
 import { SrtcpSession } from '@koush/werift-src/packages/rtp/src/srtp/srtcp';
 import { SrtpSession } from '@koush/werift-src/packages/rtp/src/srtp/srtp';
-import { getNaluTypesInNalu, H264_NAL_TYPE_IDR } from '@scrypted/common/src/rtp-codec';
+import { getNaluTypesInNalu, H264_NAL_TYPE_IDR } from '@scrypted/common/src/rtsp-server';
 import dgram from 'dgram';
 import { AudioStreamingSamplerate } from '../../hap';
 import { ntpTime } from './camera-utils';
 import { H264Repacketizer } from './h264-packetizer';
 import { OpusRepacketizer } from './opus-repacketizer';
 import throttle from 'lodash/throttle';
-import { H265Repacketizer } from '../../../../webrtc/src/h265-packetizer';
 
 export function createCameraStreamSender(console: Console, config: Config, sender: dgram.Socket, ssrc: number, payloadType: number, port: number, targetAddress: string, rtcpInterval: number,
     videoOptions?: {
         maxPacketSize: number,
         sps: Buffer,
         pps: Buffer,
-    } & ({ codec?: 'h264' } | { codec: 'h265'; vps: Buffer }),
+    },
     audioOptions?: {
         audioPacketTime: number,
         audioSampleRate: AudioStreamingSamplerate,
         framesPerPacket: number,
-        // Modern HomeKit Opus uses the standard 48 kHz RTP clock, independently
-        // of the advertised encoder sample rate.
-        rtpClockRate?: number,
-    }, rewriteSequenceNumbers = false) {
+    }) {
     const srtpSession = new SrtpSession(config);
     const srtcpSession = new SrtcpSession(config);
 
     let firstTimestamp = 0;
     let lastTimestamp = 0;
-    let lastNtpTimestamp: bigint;
     let packetCount = 0;
     let octetCount = 0;
     let lastRtcp = 0;
     let firstSequenceNumber: number;
     let opusPacketizer: OpusRepacketizer;
-    let videoPacketizer: H264Repacketizer | H265Repacketizer;
+    let h264Packetizer: H264Repacketizer;
     let analyzeVideo = true;
 
     const loggedNaluTypes = new Set<number>();
@@ -62,28 +57,23 @@ export function createCameraStreamSender(console: Console, config: Config, sende
                 break;
         }
         audioIntervalScale = audioIntervalScale * audioOptions.audioPacketTime / 20;
-        if (audioOptions.rtpClockRate)
-            audioIntervalScale = audioOptions.rtpClockRate * audioOptions.audioPacketTime / 1000 / 160;
         opusPacketizer = new OpusRepacketizer(audioOptions.framesPerPacket);
     }
     else {
-        if (videoOptions?.maxPacketSize) {
+        if (videoOptions.maxPacketSize) {
+            // adjust packet size for the rtp packet header (12).
             const adjustedMtu = videoOptions.maxPacketSize - 12;
-            videoPacketizer = videoOptions.codec === 'h265'
-                ? new H265Repacketizer(console, adjustedMtu, videoOptions)
-                : new H264Repacketizer(console, adjustedMtu, videoOptions);
+            h264Packetizer = new H264Repacketizer(console, adjustedMtu, videoOptions);
         }
         sender.setSendBufferSize(1024 * 1024);
     }
 
     function sendRtcpInternal(now: number) {
-        if (lastNtpTimestamp === undefined)
-            return;
         lastRtcp = now;
         const sr = new RtcpSrPacket({
             ssrc,
             senderInfo: new RtcpSenderInfo({
-                ntpTimestamp: lastNtpTimestamp,
+                ntpTimestamp: ntpTime(),
                 rtpTimestamp: lastTimestamp,
                 packetCount,
                 octetCount,
@@ -102,22 +92,23 @@ export function createCameraStreamSender(console: Console, config: Config, sende
     function sendPacket(rtp: RtpPacket) {
         const now = Date.now();
 
+        // packet count may be less than zero if rollover counting fails due to heavy packet loss or other
+        // unforseen edge cases.
+        if (now > lastRtcp + rtcpInterval * 1000) {
+            sendRtcpInternal(now);
+        }
+        lastTimestamp = rtp.header.timestamp;
+
         packetCount++;
         octetCount += rtp.payload.length;
 
         rtp.header.padding = false;
         rtp.header.ssrc = ssrc;
         rtp.header.payloadType = payloadType;
-        if (rewriteSequenceNumbers)
-            rtp.header.sequenceNumber = (firstSequenceNumber + packetCount - 1) & 0xffff;
+
 
         const srtp = srtpSession.encrypt(rtp.payload, rtp.header);
         sender.send(srtp, port, targetAddress);
-        // Retain a matching wall-clock/RTP pair, including for explicit RTCP sends.
-        lastTimestamp = rtp.header.timestamp;
-        lastNtpTimestamp = ntpTime();
-        if (now > lastRtcp + rtcpInterval * 1000)
-            sendRtcpInternal(now);
     }
 
     function sendRtp(rtp: RtpPacket) {
@@ -150,22 +141,22 @@ export function createCameraStreamSender(console: Console, config: Config, sende
             // HAP requests, and the packet time is respected,
             // opus 48khz will work just fine.
             for (const rtp of packets) {
-                rtp.header.timestamp = (firstTimestamp + packetCount * 160 * audioIntervalScale) % (audioOptions.rtpClockRate ? 0x100000000 : 0xFFFFFFFF);
+                rtp.header.timestamp = (firstTimestamp + packetCount * 160 * audioIntervalScale) % 0xFFFFFFFF;
                 sendPacket(rtp);
             }
             return;
         }
 
-        if (!videoPacketizer) {
+        if (!h264Packetizer) {
             sendPacket(rtp);
             return;
         }
 
-        const packets = videoPacketizer.repacketize(rtp);
+        const packets = h264Packetizer.repacketize(rtp);
         if (!packets?.length)
             return;
         for (const packet of packets) {
-            if (analyzeVideo && videoOptions.codec !== 'h265') {
+            if (analyzeVideo) {
                 const naluTypes = getNaluTypesInNalu(packet.payload, true);
                 analyzeVideo = !naluTypes.has(H264_NAL_TYPE_IDR);
                 if (analyzeVideo) {
